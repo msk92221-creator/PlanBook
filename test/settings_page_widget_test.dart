@@ -115,6 +115,16 @@ void main() {
     expect(store.tree.allNodes.map((n) => n.title), ['기존 작업']);
   });
 
+  testWidgets('앱 정보 섹션에 업데이트 확인 항목이 보인다', (tester) async {
+    final store = await _emptyStore();
+    await _pump(tester, store);
+
+    await tester.scrollUntilVisible(find.text('업데이트 확인'), 200);
+    await tester.pump();
+
+    expect(find.text('업데이트 확인'), findsOneWidget);
+  });
+
   testWidgets('디버그 무결성 검사: 정상 데이터면 "이상 없음"이 뜬다', (tester) async {
     final store = await _emptyStore();
     store.addNode(title: '정상 작업');

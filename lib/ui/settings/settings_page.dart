@@ -10,13 +10,20 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../../data/plan_export_import.dart';
 import '../../data/plan_store.dart';
+import '../../data/update_check.dart';
 import '../../domain/app_settings.dart';
 import '../../domain/plan_integrity.dart';
 import '../plan/gantt_metrics.dart';
+
+/// GitHub 저장소(owner/repo) — 업데이트 확인이 조회할 대상.
+const String kUpdateRepoOwner = 'msk92221-creator';
+const String kUpdateRepoName = 'PlanBook';
 
 class SettingsPage extends StatelessWidget {
   final PlanStore store;
@@ -101,6 +108,15 @@ class SettingsPage extends StatelessWidget {
                     '가져오면 현재 데이터가 모두 대체됩니다.'),
                 onTap: () => _importFlow(context),
               ),
+              const Divider(),
+              const _SectionHeader('앱 정보'),
+              ListTile(
+                leading: const Icon(Icons.system_update_alt_outlined),
+                title: const Text('업데이트 확인'),
+                subtitle: Text('GitHub 릴리스($kUpdateRepoOwner/$kUpdateRepoName)에서 '
+                    '새 버전이 있는지 확인합니다.'),
+                onTap: () => _checkUpdate(context),
+              ),
               if (kDebugMode) ...[
                 const Divider(),
                 const _SectionHeader('디버그'),
@@ -116,6 +132,60 @@ class SettingsPage extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+
+  /// GitHub 최신 릴리스를 확인하고, 더 새 버전이 있으면 다운로드 여부를 묻는다.
+  /// **자동으로 다운로드/설치하지 않는다** — 항상 사용자가 "다운로드"를
+  /// 눌러야 브라우저/OS 다운로드 관리자가 파일을 받는다.
+  Future<void> _checkUpdate(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final info = await PackageInfo.fromPlatform();
+    final release =
+        await fetchLatestRelease(owner: kUpdateRepoOwner, repo: kUpdateRepoName);
+    if (!context.mounted) return;
+
+    if (release == null) {
+      messenger.showSnackBar(
+        const SnackBar(content: Text('업데이트 확인에 실패했습니다. 네트워크를 확인해주세요.')),
+      );
+      return;
+    }
+    if (!isNewerVersion(info.version, release.tagName)) {
+      messenger.showSnackBar(
+        SnackBar(content: Text('이미 최신 버전입니다 (${info.version}).')),
+      );
+      return;
+    }
+
+    final asset =
+        pickAssetForPlatform(release, isAndroid: Platform.isAndroid);
+    if (!context.mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('새 버전 ${release.tagName} 있음'),
+        content: Text(
+          '현재 버전: ${info.version}\n최신 버전: ${release.tagName}\n\n'
+          '${asset != null ? '다운로드를 누르면 브라우저/다운로드 관리자로 파일을 받습니다.' : '이 플랫폼용 첨부 파일을 찾지 못해 릴리스 페이지로 이동합니다.'}',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('나중에'),
+          ),
+          FilledButton(
+            onPressed: () {
+              Navigator.of(ctx).pop();
+              launchUrl(
+                Uri.parse(asset?.downloadUrl ?? release.htmlUrl),
+                mode: LaunchMode.externalApplication,
+              );
+            },
+            child: const Text('다운로드'),
+          ),
+        ],
+      ),
     );
   }
 

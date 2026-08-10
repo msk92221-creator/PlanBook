@@ -1,4 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- GitHub Releases 업데이트 확인(HTTP API 조회) 에 필요. -->
+    <uses-permission android:name="android.permission.INTERNET" />
     <application
         android:label="PlanBook"
         android:name="${applicationName}"
@@ -40,6 +42,12 @@
         <intent>
             <action android:name="android.intent.action.PROCESS_TEXT"/>
             <data android:mimeType="text/plain"/>
+        </intent>
+        <!-- url_launcher 로 업데이트 다운로드 링크(https)를 여는 데 필요
+             (Android 11+ 패키지 가시성 정책). -->
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="https" />
         </intent>
     </queries>
 </manifest>
