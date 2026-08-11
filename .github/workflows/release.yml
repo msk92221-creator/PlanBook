@@ -1,0 +1,119 @@
+# 태그(vX.Y.Z)를 푸시하면 Windows/Android 빌드를 만들어 GitHub 릴리스로 올린다.
+# 로컬 Windows 머신 없이도 릴리스를 낼 수 있게 하는 것이 목적이다.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # 태그를 새로 만들지 않고 기존 태그로 다시 돌리고 싶을 때 수동 실행.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '릴리스할 태그 (예: v1.0.2)'
+        required: true
+
+# 릴리스 생성/자산 업로드에 쓰기 권한이 필요하다.
+permissions:
+  contents: write
+
+env:
+  # pubspec.yaml 의 `environment: sdk: ^3.12.2` 와 맞는 Flutter 버전.
+  FLUTTER_VERSION: '3.44.9'
+
+jobs:
+  # 태그 이름을 한 곳에서 정해 두고 모든 잡이 같은 값을 쓰게 한다
+  # (push 트리거면 밀린 태그, 수동 실행이면 입력값).
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+    steps:
+      - id: pick
+        run: echo "tag=${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
+  build-windows:
+    needs: [version, test]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+      - run: flutter pub get
+      - run: flutter build windows --release
+      # Release 폴더 전체(exe + dll + data)를 통째로 압축해야 실행된다.
+      - name: Zip release folder
+        shell: pwsh
+        run: |
+          Compress-Archive `
+            -Path build\windows\x64\runner\Release\* `
+            -DestinationPath "PlanBook-windows-${{ needs.version.outputs.tag }}.zip"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: PlanBook-windows-*.zip
+
+  build-android:
+    needs: [version, test]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+      - run: flutter pub get
+      # 서명 설정은 기존 릴리스(v1.0.0/v1.0.1)와 동일하게 android/app 의
+      # 기본값(디버그 키)을 그대로 쓴다. 여기서 바꾸지 않는다.
+      - run: flutter build apk --release
+      - name: Rename apk
+        run: |
+          mv build/app/outputs/flutter-apk/app-release.apk \
+             "PlanBook-android-${{ needs.version.outputs.tag }}.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android
+          path: PlanBook-android-*.apk
+
+  publish:
+    needs: [version, build-windows, build-android]
+    runs-on: ubuntu-latest
+    steps:
+      # 릴리스 노트 파일(.github/release-notes/<tag>.md)을 읽기 위해 체크아웃한다.
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          notes=".github/release-notes/${TAG}.md"
+          if [ -f "$notes" ]; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "PlanBook $TAG" --notes-file "$notes" dist/*
+          else
+            # 노트 파일을 깜빡했더라도 릴리스 자체는 나가게 한다.
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "PlanBook $TAG" --generate-notes dist/*
+          fi
