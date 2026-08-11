@@ -33,6 +33,18 @@ Future<PlanStore> _seededStore() async {
   return store;
 }
 
+Future<PlanStore> _emptyStore() async {
+  final store = PlanStore(
+    repository: _MemoryRepo(),
+    nowProvider: () => DateTime(2024, 8, 16),
+    autosaveDelay: Duration.zero,
+  );
+  await store.load();
+  await store.flush();
+  addTearDown(store.dispose);
+  return store;
+}
+
 /// 이 파일은 **PlanPage 자체**를 검증한다.
 /// (앱 진입 화면은 AppShell 의 Today 이므로 PlanBookApp 을 띄우면 Gantt 가 선택되지
 ///  않는다. 화면 전환은 app_shell_test.dart 가 따로 검증한다.)
@@ -42,6 +54,35 @@ Future<void> _pump(WidgetTester tester, PlanStore store) async {
 }
 
 void main() {
+  group('PlanPage 빈 상태', () {
+    testWidgets('완전히 빈 상태에서도 "새 목표 추가" 버튼이 기본으로 보인다(샘플 버튼만 있으면 안 됨)',
+        (tester) async {
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final store = await _emptyStore();
+      await _pump(tester, store);
+
+      expect(find.text('새 목표 추가'), findsOneWidget);
+      expect(find.text('샘플 계획으로 둘러보기'), findsOneWidget);
+    });
+
+    testWidgets('빈 상태에서 "새 목표 추가"를 누르면 편집 다이얼로그가 뜬다', (tester) async {
+      tester.view.physicalSize = const Size(1400, 900);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final store = await _emptyStore();
+      await _pump(tester, store);
+
+      await tester.tap(find.text('새 목표 추가'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('항목 편집'), findsOneWidget);
+    });
+  });
+
   group('PlanPage 렌더', () {
     testWidgets('6) 샘플 트리 크래시 없이 렌더된다', (tester) async {
       tester.view.physicalSize = const Size(1400, 900);

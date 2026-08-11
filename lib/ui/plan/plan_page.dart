@@ -509,12 +509,21 @@ class _PlanPageState extends State<PlanPage> {
                 onPressed: () => setState(() => _filter = PlanFilterState.empty),
                 child: const Text('전체 보기로 전환'),
               ),
-            ] else
+            ] else ...[
+              // "새 목표 추가" 를 기본 진입점으로 삼는다 — 샘플 생성 버튼만
+              // 있으면 사용자가 자기 계획을 어떻게 시작해야 할지 알 수 없다.
               FilledButton.icon(
+                onPressed: _onAddRoot,
+                icon: const Icon(Icons.add_circle_outline),
+                label: const Text('새 목표 추가'),
+              ),
+              const SizedBox(height: 8),
+              TextButton.icon(
                 onPressed: _onSample,
                 icon: const Icon(Icons.auto_mode),
-                label: const Text('샘플 계획 만들기'),
+                label: const Text('샘플 계획으로 둘러보기'),
               ),
+            ],
           ],
         ),
       ),
