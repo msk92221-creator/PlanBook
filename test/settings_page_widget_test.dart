@@ -79,6 +79,18 @@ void main() {
     expect(store.settings.weekStart, DateTime.sunday);
   });
 
+  testWidgets('동기화 섹션이 보인다(path_provider 채널이 없어도 화면은 죽지 않는다)',
+      (tester) async {
+    final store = await _emptyStore();
+    await _pump(tester, store);
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(find.text('동기화'), 200);
+    await tester.pump();
+
+    expect(find.text('동기화'), findsOneWidget);
+  });
+
   testWidgets('백업 섹션에 내보내기/가져오기 항목이 보인다', (tester) async {
     final store = await _emptyStore();
     await _pump(tester, store);

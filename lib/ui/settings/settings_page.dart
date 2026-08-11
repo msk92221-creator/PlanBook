@@ -3,10 +3,16 @@
 /// [AppSettings] 를 [PlanStore.updateSettings] 단일 경로로만 변경한다(별도
 /// 저장 경로를 만들지 않는다). 앱 기본 진입 화면은 항상 Today 이고, "마지막
 /// 화면 복원"은 이 화면에서 켤 수 있는 선택 기능이다.
+///
+/// 동기화 설정([SyncConfig])만은 예외로, [PlanStore]가 들고 있는 데이터가
+/// 아니라 기기 로컬 전용 파일에 별도로 저장된다(왜인지는
+/// data/sync_config.dart 문서 참고). 그래서 이 화면은 [StatefulWidget]으로
+/// 그 값을 따로 로드/보관한다.
 library;
 
 import 'dart:io';
 
+import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -14,8 +20,10 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../data/json_plan_repository.dart';
 import '../../data/plan_export_import.dart';
 import '../../data/plan_store.dart';
+import '../../data/sync_config.dart';
 import '../../data/update_check.dart';
 import '../../domain/app_settings.dart';
 import '../../domain/plan_integrity.dart';
@@ -25,10 +33,50 @@ import '../plan/gantt_metrics.dart';
 const String kUpdateRepoOwner = 'msk92221-creator';
 const String kUpdateRepoName = 'PlanBook';
 
-class SettingsPage extends StatelessWidget {
+/// 동기화 폴더 선택 시, 이미 데이터가 있는 폴더를 발견하면 사용자에게 묻는
+/// 세 가지 선택지.
+enum _SyncFolderChoice { cancel, useFolder, overwriteFolder }
+
+class SettingsPage extends StatefulWidget {
   final PlanStore store;
 
   const SettingsPage({super.key, required this.store});
+
+  @override
+  State<SettingsPage> createState() => _SettingsPageState();
+}
+
+class _SettingsPageState extends State<SettingsPage> {
+  PlanStore get store => widget.store;
+
+  Directory? _localDir;
+
+  /// 동기화 설정 로드 전 기본값은 "꺼짐"이다 — 로딩 스피너를 따로 두지
+  /// 않는다. 실제 기기에서는 [defaultLocalDir]가 거의 즉시 응답하므로 켜져
+  /// 있는 경우에도 잠깐 깜빡이는 정도이고, path_provider 채널이 없는 환경
+  /// (위젯 테스트 등)에서도 화면이 "로딩 중" 애니메이션에 영구히 묶이지
+  /// 않는다(끝없이 도는 스피너는 pumpAndSettle 을 무한 대기시킨다).
+  SyncConfig _syncConfig = const SyncConfig();
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSyncConfig();
+  }
+
+  Future<void> _loadSyncConfig() async {
+    try {
+      final localDir = await defaultLocalDir();
+      final config = await loadSyncConfig(localDir);
+      if (!mounted) return;
+      setState(() {
+        _localDir = localDir;
+        _syncConfig = config;
+      });
+    } catch (_) {
+      // 조회 실패 시 이미 기본값(동기화 꺼짐)이므로 할 일 없음.
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -93,6 +141,9 @@ class SettingsPage extends StatelessWidget {
                 ),
               ),
               const Divider(),
+              const _SectionHeader('동기화'),
+              _buildSyncSection(context),
+              const Divider(),
               const _SectionHeader('백업'),
               ListTile(
                 leading: const Icon(Icons.file_upload_outlined),
@@ -132,6 +183,138 @@ class SettingsPage extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+
+  /// "동기화" 섹션 본문. 설정 로드 전에는 진행 표시만 보여준다.
+  Widget _buildSyncSection(BuildContext context) {
+    final config = _syncConfig;
+    return Column(
+      children: [
+        ListTile(
+          leading: const Icon(Icons.cloud_sync_outlined),
+          title: const Text('동기화 폴더 (OneDrive 등)'),
+          subtitle: Text(
+            config.isEnabled
+                ? '${config.folderPath}${Platform.pathSeparator}PlanBook\n'
+                    '다른 폴더로 바꾸려면 다시 선택하세요. '
+                    '적용하려면 앱을 재시작해야 합니다.'
+                : '설정 안 함 — 이 기기에만 저장됩니다.\n'
+                    'OneDrive 등 동기화 폴더를 지정하면, 그 폴더를 통해 다른 기기와 '
+                    '같은 데이터를 공유할 수 있습니다.',
+          ),
+          isThreeLine: true,
+          onTap: () => _pickSyncFolder(context),
+        ),
+        if (config.isEnabled)
+          ListTile(
+            leading: const Icon(Icons.link_off),
+            title: const Text('동기화 해제'),
+            subtitle: const Text('현재 데이터를 이 기기 로컬 저장 위치로 복사한 뒤 폴더 연결을 끊습니다.'),
+            onTap: () => _disableSync(context),
+          ),
+      ],
+    );
+  }
+
+  Future<void> _pickSyncFolder(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final picked = await getDirectoryPath(
+      confirmButtonText: '이 폴더로 동기화',
+    );
+    if (picked == null || picked.isEmpty) return;
+    if (!context.mounted) return;
+
+    final targetDir = syncDataDir(picked);
+    final existing = await JsonPlanRepository(directory: targetDir).load();
+    if (!context.mounted) return;
+
+    if (existing != null) {
+      final choice = await showDialog<_SyncFolderChoice>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('이미 데이터가 있는 폴더입니다'),
+          content: Text(
+            '선택한 폴더에 작업 ${existing.nodes.length}개, '
+            '프로젝트 ${existing.projects.length}개가 들어 있는 PlanBook 데이터가 이미 '
+            '있습니다.\n\n어떻게 할까요?',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(_SyncFolderChoice.cancel),
+              child: const Text('취소'),
+            ),
+            TextButton(
+              onPressed: () =>
+                  Navigator.of(ctx).pop(_SyncFolderChoice.overwriteFolder),
+              child: const Text('현재 기기 데이터로 덮어쓰기'),
+            ),
+            FilledButton(
+              onPressed: () =>
+                  Navigator.of(ctx).pop(_SyncFolderChoice.useFolder),
+              child: const Text('폴더 데이터 사용'),
+            ),
+          ],
+        ),
+      );
+      if (choice == null || choice == _SyncFolderChoice.cancel) return;
+      if (choice == _SyncFolderChoice.overwriteFolder) {
+        await JsonPlanRepository(directory: targetDir)
+            .save(store.exportableSnapshot());
+      }
+      // useFolder: 폴더에 이미 있는 데이터를 그대로 둔다. 재시작 시 그 데이터로 열린다.
+    } else {
+      // 빈 폴더면 현재 데이터를 그대로 복사해 둔다(전환 과정에서 데이터 유실 방지).
+      await JsonPlanRepository(directory: targetDir)
+          .save(store.exportableSnapshot());
+    }
+
+    final localDir = _localDir ?? await defaultLocalDir();
+    final newConfig = SyncConfig(folderPath: picked);
+    await saveSyncConfig(localDir, newConfig);
+    if (!mounted) return;
+    setState(() {
+      _localDir = localDir;
+      _syncConfig = newConfig;
+    });
+    messenger.showSnackBar(
+      const SnackBar(content: Text('동기화 폴더가 설정되었습니다. 적용하려면 앱을 재시작하세요.')),
+    );
+  }
+
+  Future<void> _disableSync(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('동기화 해제'),
+        content: const Text(
+            '현재 데이터를 이 기기의 로컬 저장 위치로 복사한 뒤 동기화 폴더 연결을 끊습니다. 계속할까요?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('취소'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('해제'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+
+    final localDir = _localDir ?? await defaultLocalDir();
+    await JsonPlanRepository(directory: localDir)
+        .save(store.exportableSnapshot());
+    await saveSyncConfig(localDir, const SyncConfig());
+    if (!mounted) return;
+    setState(() {
+      _localDir = localDir;
+      _syncConfig = const SyncConfig();
+    });
+    messenger.showSnackBar(
+      const SnackBar(content: Text('동기화가 해제되었습니다. 적용하려면 앱을 재시작하세요.')),
     );
   }
 
