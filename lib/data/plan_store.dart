@@ -208,11 +208,27 @@ class PlanStore extends ChangeNotifier {
     _scheduleAutosave();
   }
 
+  /// 아직 저장되지 않은 변경이 남아 있는지. 종료 직전에 확인해 "정말 닫을지"
+  /// 판단하는 데 쓴다.
+  bool get hasUnsavedChanges => _dirty;
+
+  /// 마지막 저장 실패 사유(성공했으면 null).
+  ///
+  /// **릴리스 빌드에서도 실패를 알 수 있어야 한다.** 예전에는 실패를 디버그
+  /// 로그로만 남겨서, 저장이 계속 실패해도 사용자는 아무 것도 모른 채 작업을
+  /// 이어가다 종료 시점에 전부 잃을 수 있었다.
+  Object? get lastSaveError => _lastSaveError;
+  Object? _lastSaveError;
+
   /// 보류 중인 저장이 있으면 즉시 실행. (앱 종료/백그라운드 진입 시 호출)
-  Future<void> flush() async {
+  ///
+  /// 반환값은 **저장할 게 없거나 저장에 성공했으면 true**, 실패했으면 false.
+  /// 호출부(특히 종료 처리)는 이 값을 반드시 확인해야 한다 — 실패했는데 그대로
+  /// 종료하면 사용자가 쓴 내용이 사라진다.
+  Future<bool> flush() async {
     _saveTimer?.cancel();
     _saveTimer = null;
-    if (!_dirty) return;
+    if (!_dirty) return true;
     _dirty = false;
     try {
       await repository.save(
@@ -224,12 +240,16 @@ class PlanStore extends ChangeNotifier {
           settings: _settings,
         ),
       );
+      _lastSaveError = null;
+      return true;
     } catch (e) {
       // 저장 실패 시 dirty 복구하여 다음 기회에 재시도.
       _dirty = true;
+      _lastSaveError = e;
       if (kDebugMode) {
         debugPrint('PlanStore.flush: save failed: $e');
       }
+      return false;
     }
   }
 
