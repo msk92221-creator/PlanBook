@@ -164,4 +164,99 @@ void main() {
       expect(find.byIcon(Icons.diamond_outlined), findsNothing);
     });
   });
+
+  group('요약(부모) 바 위의 자손 마일스톤 표시', () {
+    testWidgets('자식 마일스톤이 부모 행에도 마커로 겹쳐 표시된다', (tester) async {
+      final store = await _emptyStore();
+      final parent = store.addNode(
+        title: 'PA장비',
+        startDate: PlanDate(2026, 8, 1),
+        endDate: PlanDate(2026, 8, 28),
+      );
+      final m = store.addNode(
+        parentId: parent.id,
+        title: '착수회의',
+        isMilestone: true,
+        endDate: PlanDate(2026, 8, 12),
+      );
+      await store.flush();
+      await _pumpWide(tester, store);
+
+      // 마일스톤 자기 행의 마커는 그대로 있고,
+      expect(find.byKey(ValueKey('milestone-marker-${m.id}')), findsOneWidget);
+      // 부모 행에도 파생 마커가 하나 더 생긴다.
+      expect(
+        find.byKey(ValueKey('summary-milestone-${parent.id}-${m.id}')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('부모를 접어도 자손 마일스톤 마커는 부모 행에 남는다', (tester) async {
+      final store = await _emptyStore();
+      final parent = store.addNode(
+        title: 'PA장비',
+        startDate: PlanDate(2026, 8, 1),
+        endDate: PlanDate(2026, 8, 28),
+      );
+      final m = store.addNode(
+        parentId: parent.id,
+        title: '착수회의',
+        isMilestone: true,
+        endDate: PlanDate(2026, 8, 12),
+      );
+      store.setAllCollapsed(true);
+      await store.flush();
+      await _pumpWide(tester, store);
+
+      // 접혔으므로 마일스톤 자기 행은 사라지지만,
+      expect(find.byKey(ValueKey('milestone-marker-${m.id}')), findsNothing);
+      // 부모 행 마커로 기점은 계속 보인다 — 이게 이 기능의 핵심이다.
+      expect(
+        find.byKey(ValueKey('summary-milestone-${parent.id}-${m.id}')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('손자 마일스톤도 최상위 부모 행에 표시된다', (tester) async {
+      final store = await _emptyStore();
+      final root = store.addNode(
+        title: 'PA장비',
+        startDate: PlanDate(2026, 8, 1),
+        endDate: PlanDate(2026, 8, 28),
+      );
+      final sub = store.addNode(parentId: root.id, title: '1단계');
+      final m = store.addNode(
+        parentId: sub.id,
+        title: '납품',
+        isMilestone: true,
+        endDate: PlanDate(2026, 8, 15),
+      );
+      await store.flush();
+      await _pumpWide(tester, store);
+
+      expect(
+        find.byKey(ValueKey('summary-milestone-${root.id}-${m.id}')),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('자손에 마일스톤이 없으면 부모 행에 파생 마커가 생기지 않는다',
+        (tester) async {
+      final store = await _emptyStore();
+      final parent = store.addNode(title: 'PA장비');
+      store.addNode(
+        parentId: parent.id,
+        title: '일반 자식',
+        startDate: PlanDate(2026, 8, 1),
+        endDate: PlanDate(2026, 8, 5),
+      );
+      await store.flush();
+      await _pumpWide(tester, store);
+
+      expect(
+        find.byKey(ValueKey('summary-milestone-${parent.id}-')),
+        findsNothing,
+      );
+    });
+  });
 }

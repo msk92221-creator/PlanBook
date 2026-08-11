@@ -16,6 +16,7 @@ import 'package:flutter/gestures.dart';
 
 import '../../core/date/plan_date.dart';
 import '../../data/plan_store.dart';
+import '../../domain/app_settings.dart';
 import '../../domain/plan_filter.dart';
 import '../../domain/plan_node.dart';
 import '../filter/filter_bar.dart';
@@ -288,19 +289,13 @@ class _PlanPageState extends State<PlanPage> {
     );
     _scheduleInitialScroll(metrics, rows);
 
-    final scheme = Theme.of(context).colorScheme;
     return Column(
       children: [
         Expanded(
           child: Row(
             children: [
-              Container(
-                width: kTreePaneWidth,
-                decoration: BoxDecoration(
-                  border: Border(
-                    right: BorderSide(color: scheme.outlineVariant, width: 1),
-                  ),
-                ),
+              SizedBox(
+                width: clampTreePaneWidth(_store.settings.treePaneWidth),
                 child: TreePanel(
                   tree: _store.tree,
                   rows: rows,
@@ -309,6 +304,11 @@ class _PlanPageState extends State<PlanPage> {
                   store: _store,
                   selectedNodeId: _selectedNodeId,
                   onSelect: (id) => setState(() => _selectedNodeId = id),
+                ),
+              ),
+              _PaneDivider(
+                onDelta: (dx) => _store.updateSettings(
+                  (s) => s.copyWith(treePaneWidth: s.treePaneWidth + dx),
                 ),
               ),
               Expanded(
@@ -553,6 +553,54 @@ class _ZoomSelector extends StatelessWidget {
         children: [
           for (final z in GanttZoomLevel.values) Text(z.label),
         ],
+      ),
+    );
+  }
+}
+
+/// 작업 트리 칸과 Gantt 사이의 **드래그 가능한 경계선**.
+///
+/// 폭이 고정이면 제목이나 기간(`2025-12-17 ~ 2026-0...`)이 잘려도 사용자가
+/// 할 수 있는 게 없다. 이 경계선을 좌우로 끌어 트리 칸을 넓히거나 줄인다.
+///
+/// **터치(Android)도 같은 제스처로 동작한다.** 보이는 선은 가늘게(1px) 두되
+/// 실제 잡히는 영역은 [_hitWidth] 만큼 넓혀서, 손가락으로도 집을 수 있게 했다
+/// (마우스 전용으로 만들면 태블릿에서 못 쓴다). 폭이 좁아 트리/Gantt 를 탭으로
+/// 전환하는 좁은 화면 레이아웃에서는 두 칸이 각각 전체 폭을 쓰므로 이 경계선
+/// 자체가 나타나지 않는다.
+class _PaneDivider extends StatefulWidget {
+  /// 드래그한 가로 이동량(px). 오른쪽으로 끌면 양수.
+  final ValueChanged<double> onDelta;
+
+  const _PaneDivider({required this.onDelta});
+
+  @override
+  State<_PaneDivider> createState() => _PaneDividerState();
+}
+
+class _PaneDividerState extends State<_PaneDivider> {
+  static const double _hitWidth = 10;
+  bool _active = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeLeftRight,
+      onEnter: (_) => setState(() => _active = true),
+      onExit: (_) => setState(() => _active = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onHorizontalDragUpdate: (d) => widget.onDelta(d.delta.dx),
+        child: SizedBox(
+          width: _hitWidth,
+          child: Center(
+            child: Container(
+              width: _active ? 2 : 1,
+              color: _active ? scheme.primary : scheme.outlineVariant,
+            ),
+          ),
+        ),
       ),
     );
   }

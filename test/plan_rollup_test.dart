@@ -49,6 +49,62 @@ void main() {
       expect(r.endDate, PlanDate(2024, 8, 20));
     });
 
+    test('부모에 직접 넣은 종료일이 자식보다 늦으면 그 값이 유지된다(자식 범위로 잘리지 않음)', () {
+      // 사용자가 "PA장비"를 2028년까지로 잡아둔 뒤 짧은 자식을 하나 붙인 상황.
+      // 자식 범위만 쓰면 2028년이 화면에서 사라진다.
+      final tree = PlanTree.fromNodes([
+        _n('parent',
+            autoRollup: true,
+            start: PlanDate(2025, 12, 17),
+            end: PlanDate(2028, 12, 31)),
+        _n('c1', parent: 'parent',
+            start: PlanDate(2025, 12, 17), end: PlanDate(2026, 4, 30)),
+      ]);
+      final r = computeRollup(tree, 'parent');
+      expect(r.startDate, PlanDate(2025, 12, 17));
+      expect(r.endDate, PlanDate(2028, 12, 31));
+    });
+
+    test('부모에 직접 넣은 시작일이 자식보다 빠르면 그 값이 유지된다', () {
+      final tree = PlanTree.fromNodes([
+        _n('parent',
+            autoRollup: true,
+            start: PlanDate(2024, 1, 1),
+            end: PlanDate(2024, 2, 1)),
+        _n('c1', parent: 'parent',
+            start: PlanDate(2024, 6, 1), end: PlanDate(2024, 6, 30)),
+      ]);
+      final r = computeRollup(tree, 'parent');
+      expect(r.startDate, PlanDate(2024, 1, 1));
+      expect(r.endDate, PlanDate(2024, 6, 30),
+          reason: '요약 바는 자식을 모두 감싸야 하므로 자식의 늦은 종료일이 이긴다');
+    });
+
+    test('부모 기간이 자식 안쪽이면 자식 범위가 그대로 쓰인다(바가 자식보다 짧아지지 않음)', () {
+      final tree = PlanTree.fromNodes([
+        _n('parent',
+            autoRollup: true,
+            start: PlanDate(2024, 8, 8),
+            end: PlanDate(2024, 8, 9)),
+        _n('c1', parent: 'parent',
+            start: PlanDate(2024, 8, 1), end: PlanDate(2024, 8, 20)),
+      ]);
+      final r = computeRollup(tree, 'parent');
+      expect(r.startDate, PlanDate(2024, 8, 1));
+      expect(r.endDate, PlanDate(2024, 8, 20));
+    });
+
+    test('부모에 날짜가 없으면 예전처럼 자식 범위만 쓴다', () {
+      final tree = PlanTree.fromNodes([
+        _n('parent', autoRollup: true),
+        _n('c1', parent: 'parent',
+            start: PlanDate(2024, 8, 10), end: PlanDate(2024, 8, 12)),
+      ]);
+      final r = computeRollup(tree, 'parent');
+      expect(r.startDate, PlanDate(2024, 8, 10));
+      expect(r.endDate, PlanDate(2024, 8, 12));
+    });
+
     test('children with no dates ignored for min/max', () {
       final tree = PlanTree.fromNodes([
         _n('parent', autoRollup: true),
@@ -163,10 +219,12 @@ void main() {
             progress: 0.0, estimate: 1),
       ]);
       final r = computeRollup(tree, 'parent');
-      // effective uses children
-      expect(r.startDate, PlanDate(2024, 8, 10));
+      // 기간은 부모 자신의 값과 자식 범위의 합집합이다.
+      expect(r.startDate, PlanDate(2020, 1, 1));
+      expect(r.endDate, PlanDate(2024, 8, 12));
+      // 진행률은 자식 기준(부모의 0.99 는 쓰지 않는다).
       expect(r.progress, 0.0);
-      // but stored original preserved
+      // 저장된 원본은 그대로 보존된다.
       final stored = tree['parent']!;
       expect(stored.startDate, PlanDate(2020, 1, 1));
       expect(stored.endDate, PlanDate(2020, 1, 2));

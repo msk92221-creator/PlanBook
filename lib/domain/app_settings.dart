@@ -7,6 +7,20 @@ import 'package:flutter/material.dart' show ThemeMode;
 import '../core/date/plan_date.dart' show kWeekStartWeekday;
 import '../ui/plan/gantt_metrics.dart' show GanttZoomLevel;
 
+/// 작업 트리 칸 폭의 기본값/허용 범위.
+///
+/// 최소값은 "제목과 접기 화살표가 최소한 읽히는 폭", 최대값은 "Gantt 가
+/// 완전히 밀려나지 않는 폭" 기준이다.
+const double kDefaultTreePaneWidth = 300.0;
+const double kMinTreePaneWidth = 160.0;
+const double kMaxTreePaneWidth = 900.0;
+
+/// [value] 를 트리 칸 폭 허용 범위로 자른다. NaN/무한대는 기본값으로 되돌린다.
+double clampTreePaneWidth(double value) {
+  if (value.isNaN || value.isInfinite) return kDefaultTreePaneWidth;
+  return value.clamp(kMinTreePaneWidth, kMaxTreePaneWidth);
+}
+
 /// 앱 화면 식별자. [AppSettings.lastScreen] 에 저장된다.
 ///
 /// **최초 실행 기본값은 항상 [today]** 다. lastScreen 은 재실행 시 복원용이다.
@@ -57,6 +71,12 @@ class AppSettings {
   /// 사용자가 설정에서 명시적으로 켜야 하는 선택 기능이다.
   final bool restoreLastScreen;
 
+  /// Gantt 화면 왼쪽 작업 트리 칸의 폭(px). 사용자가 경계선을 끌어 조절한다.
+  /// 제목이나 기간이 잘려 보일 때 넓힐 수 있어야 하므로 저장 대상이다.
+  /// 범위는 [kMinTreePaneWidth]~[kMaxTreePaneWidth] 로 강제한다 — 저장 파일이
+  /// 손상돼 이상한 값이 들어와도 한쪽 칸이 사라지지 않게.
+  final double treePaneWidth;
+
   const AppSettings({
     this.themeMode = ThemeMode.system,
     this.defaultZoom = GanttZoomLevel.day,
@@ -64,6 +84,7 @@ class AppSettings {
     this.weekStart = kWeekStartWeekday,
     this.seededDefaultProjects = false,
     this.restoreLastScreen = false,
+    this.treePaneWidth = kDefaultTreePaneWidth,
   });
 
   AppSettings copyWith({
@@ -73,6 +94,7 @@ class AppSettings {
     int? weekStart,
     bool? seededDefaultProjects,
     bool? restoreLastScreen,
+    double? treePaneWidth,
   }) =>
       AppSettings(
         themeMode: themeMode ?? this.themeMode,
@@ -82,6 +104,9 @@ class AppSettings {
         seededDefaultProjects:
             seededDefaultProjects ?? this.seededDefaultProjects,
         restoreLastScreen: restoreLastScreen ?? this.restoreLastScreen,
+        treePaneWidth: treePaneWidth == null
+            ? this.treePaneWidth
+            : clampTreePaneWidth(treePaneWidth),
       );
 
   Map<String, Object?> toJson() => {
@@ -91,6 +116,7 @@ class AppSettings {
         'weekStart': weekStart,
         'seededDefaultProjects': seededDefaultProjects,
         'restoreLastScreen': restoreLastScreen,
+        'treePaneWidth': treePaneWidth,
       };
 
   /// 알려진 필드만 파싱하고 알 수 없는 필드는 무시한다.
@@ -99,6 +125,10 @@ class AppSettings {
     final week = rawWeek is num
         ? rawWeek.toInt()
         : int.tryParse(rawWeek?.toString() ?? '') ?? kWeekStartWeekday;
+    final rawPane = json['treePaneWidth'];
+    final pane = rawPane is num
+        ? rawPane.toDouble()
+        : double.tryParse(rawPane?.toString() ?? '') ?? kDefaultTreePaneWidth;
     return AppSettings(
       themeMode: _themeFromName(json['themeMode']?.toString()),
       defaultZoom: _zoomFromName(json['defaultZoom']?.toString()),
@@ -106,6 +136,7 @@ class AppSettings {
       weekStart: (week >= 1 && week <= 7) ? week : kWeekStartWeekday,
       seededDefaultProjects: json['seededDefaultProjects'] == true,
       restoreLastScreen: json['restoreLastScreen'] == true,
+      treePaneWidth: clampTreePaneWidth(pane),
     );
   }
 
@@ -130,7 +161,9 @@ class AppSettings {
       other.defaultZoom == defaultZoom &&
       other.lastScreen == lastScreen &&
       other.weekStart == weekStart &&
-      other.seededDefaultProjects == seededDefaultProjects;
+      other.seededDefaultProjects == seededDefaultProjects &&
+      other.restoreLastScreen == restoreLastScreen &&
+      other.treePaneWidth == treePaneWidth;
 
   @override
   int get hashCode => Object.hash(
@@ -139,5 +172,7 @@ class AppSettings {
         lastScreen,
         weekStart,
         seededDefaultProjects,
+        restoreLastScreen,
+        treePaneWidth,
       );
 }
