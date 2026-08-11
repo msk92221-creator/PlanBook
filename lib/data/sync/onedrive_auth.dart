@@ -12,6 +12,7 @@
 library;
 
 import 'dart:convert';
+import 'dart:io' show Platform;
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
@@ -24,16 +25,44 @@ import 'pkce.dart';
 /// 빌드할 때 `--dart-define=ONEDRIVE_CLIENT_ID=<값>` 으로 넣을 수도 있고,
 /// 아래 기본값에 직접 적어도 된다. 비밀 값이 아니다(공용 클라이언트 ID 는
 /// 공개돼도 안전하며, 그래서 PKCE 를 쓴다).
-const String kOneDriveClientId =
-    String.fromEnvironment('ONEDRIVE_CLIENT_ID', defaultValue: '');
+const String kOneDriveClientId = String.fromEnvironment(
+  'ONEDRIVE_CLIENT_ID',
+  defaultValue: '872ec0ef-8aef-4088-94ea-af2ba526bb3c',
+);
 
 /// 설정이 끝났는지. false 면 UI 는 동기화 기능을 잠그고 안내만 띄운다.
 bool get isOneDriveConfigured => kOneDriveClientId.isNotEmpty;
 
-/// 앱 등록 시 넣는 리디렉션 URI 의 사용자 지정 스킴.
-/// Android 는 매니페스트 intent-filter, Windows 는 루프백 서버가 이 값을 받는다.
-const String kRedirectScheme = 'planbook';
-const String kRedirectUri = '$kRedirectScheme://auth';
+/// **리디렉션 방식은 플랫폼마다 다르다.**
+///
+/// - Android: 사용자 지정 스킴(`planbook://auth`). 매니페스트 intent-filter 가
+///   받는다.
+/// - Windows/Linux: flutter_web_auth_2 의 데스크톱 구현은 127.0.0.1 에 임시
+///   HTTP 서버를 띄워 콜백을 받는 방식이라, 콜백이 **반드시**
+///   `http://localhost:{포트}` 여야 한다(커스텀 스킴을 주면 ArgumentError 를
+///   던진다). 그래서 데스크톱은 루프백 주소를 쓴다.
+///
+/// 두 주소 **모두** Azure 앱 등록의 리디렉션 URI 에 들어가 있어야 한다.
+const String kMobileRedirectScheme = 'planbook';
+const String kMobileRedirectUri = '$kMobileRedirectScheme://auth';
+
+/// 데스크톱 루프백 포트. Azure 에 등록한 값과 반드시 같아야 한다
+/// (포트를 매번 바꾸면 등록된 URI 와 달라져 로그인이 거부된다).
+const int kDesktopLoopbackPort = 43823;
+const String kDesktopRedirectUri = 'http://localhost:$kDesktopLoopbackPort';
+
+/// 인가 요청에 넣을 redirect_uri. [isMobile] 은 테스트에서 양쪽을 다 검증하기
+/// 위한 주입점이다.
+String redirectUriFor({required bool isMobile}) =>
+    isMobile ? kMobileRedirectUri : kDesktopRedirectUri;
+
+/// [FlutterWebAuth2.authenticate] 에 넘길 callbackUrlScheme.
+/// 데스크톱에서는 스킴이 아니라 루프백 주소 전체를 넘겨야 한다.
+String callbackSchemeFor({required bool isMobile}) =>
+    isMobile ? kMobileRedirectScheme : kDesktopRedirectUri;
+
+/// 현재 플랫폼이 사용자 지정 스킴 방식인지(Android/iOS).
+bool get _isMobilePlatform => Platform.isAndroid || Platform.isIOS;
 
 /// 요청하는 권한.
 /// - `Files.ReadWrite.AppFolder` : **앱 전용 폴더만**. 사용자의 다른 파일은 못 본다.
@@ -129,7 +158,7 @@ Uri buildAuthorizationUrl({
   required String clientId,
   required String codeChallenge,
   required String state,
-  String redirectUri = kRedirectUri,
+  required String redirectUri,
   List<String> scopes = kScopes,
 }) =>
     Uri.parse(_authorizeEndpoint).replace(queryParameters: {
@@ -223,15 +252,18 @@ class OneDriveAuth {
     _requireConfigured();
     final verifier = generateCodeVerifier();
     final state = generateState();
+    final isMobile = _isMobilePlatform;
+    final redirectUri = redirectUriFor(isMobile: isMobile);
     final url = buildAuthorizationUrl(
       clientId: clientId,
       codeChallenge: codeChallengeS256(verifier),
       state: state,
+      redirectUri: redirectUri,
     );
 
     final result = await FlutterWebAuth2.authenticate(
       url: url.toString(),
-      callbackUrlScheme: kRedirectScheme,
+      callbackUrlScheme: callbackSchemeFor(isMobile: isMobile),
     );
     final code = extractAuthorizationCode(result, state);
 
@@ -241,7 +273,7 @@ class OneDriveAuth {
         'client_id': clientId,
         'grant_type': 'authorization_code',
         'code': code,
-        'redirect_uri': kRedirectUri,
+        'redirect_uri': redirectUri,
         'code_verifier': verifier,
         'scope': kScopes.join(' '),
       },
@@ -267,7 +299,7 @@ class OneDriveAuth {
         'client_id': clientId,
         'grant_type': 'refresh_token',
         'refresh_token': tokens.refreshToken,
-        'redirect_uri': kRedirectUri,
+        'redirect_uri': redirectUriFor(isMobile: _isMobilePlatform),
         'scope': kScopes.join(' '),
       },
     );
