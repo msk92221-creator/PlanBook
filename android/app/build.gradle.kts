@@ -6,7 +6,11 @@ plugins {
 
 android {
     namespace = "com.planbook.planbook"
-    compileSdk = flutter.compileSdkVersion
+    // flutter_secure_storage(v11) 는 Android SDK 37 이상으로 컴파일할 것을
+    // 요구한다(:app:checkReleaseAarMetadata 가 강제). flutter.compileSdkVersion
+    // 기본값(36)보다 명시적으로 올려야 한다. compileSdk 를 올리는 것은
+    // minSdk/targetSdk 와 무관하게 항상 하위 호환이다.
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
