@@ -79,7 +79,7 @@ void main() {
     expect(store.settings.weekStart, DateTime.sunday);
   });
 
-  testWidgets('동기화 섹션이 보인다(path_provider 채널이 없어도 화면은 죽지 않는다)',
+  testWidgets('동기화 섹션이 보인다(플랫폼 채널이 없어도 화면은 죽지 않는다)',
       (tester) async {
     final store = await _emptyStore();
     await _pump(tester, store);
@@ -89,6 +89,30 @@ void main() {
     await tester.pump();
 
     expect(find.text('동기화'), findsOneWidget);
+  });
+
+  testWidgets('로그아웃 상태에서는 OneDrive 로그인 버튼이 보인다', (tester) async {
+    final store = await _emptyStore();
+    await _pump(tester, store);
+    await tester.pumpAndSettle();
+
+    await tester.scrollUntilVisible(find.text('OneDrive 계정 연결'), 200);
+    await tester.pump();
+
+    expect(find.text('OneDrive 계정 연결'), findsOneWidget);
+    expect(find.text('로그인'), findsOneWidget);
+    // 로그인 전에는 동기화 실행 항목이 없다(누를 수 있으면 안 된다).
+    expect(find.text('지금 동기화'), findsNothing);
+  });
+
+  testWidgets('폴더 지정 방식은 완전히 사라졌다', (tester) async {
+    final store = await _emptyStore();
+    await _pump(tester, store);
+    await tester.pumpAndSettle();
+
+    // Android 에서 동작하지 않던 예전 방식의 흔적이 남아 있으면 안 된다.
+    expect(find.textContaining('동기화 폴더'), findsNothing);
+    expect(find.text('동기화 해제'), findsNothing);
   });
 
   testWidgets('백업 섹션에 내보내기/가져오기 항목이 보인다', (tester) async {

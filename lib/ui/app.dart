@@ -10,7 +10,10 @@ import 'app_shell.dart';
 class PlanBookApp extends StatelessWidget {
   final PlanStore store;
 
-  const PlanBookApp({super.key, required this.store});
+  /// 위젯 트리 밖(앱 종료 훅 등)에서 다이얼로그를 띄우기 위한 키.
+  final GlobalKey<NavigatorState>? navigatorKey;
+
+  const PlanBookApp({super.key, required this.store, this.navigatorKey});
 
   @override
   Widget build(BuildContext context) {
@@ -19,6 +22,7 @@ class PlanBookApp extends StatelessWidget {
       animation: store,
       builder: (context, _) => MaterialApp(
         title: 'PlanBook',
+        navigatorKey: navigatorKey,
         debugShowCheckedModeBanner: false,
         theme: ThemeData(
           colorSchemeSeed: const Color(0xFF2E5BB6),

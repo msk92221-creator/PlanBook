@@ -343,8 +343,9 @@ class _NodeEditDialogState extends State<NodeEditDialog> {
                 Padding(
                   padding: const EdgeInsets.only(top: 6),
                   child: Text(
-                    '※ 자식 항목이 있어 autoRollup 켜짐 — '
-                    '유효 기간/진행률은 자식들로부터 자동 계산됩니다.',
+                    '※ 자식 항목이 있어 autoRollup 켜짐 — 진행률/완료는 자식들로부터 '
+                    '자동 계산됩니다. 위 날짜는 그대로 입력할 수 있고, 화면에는 '
+                    '자식 전체 기간과 합쳐진(더 넓은) 기간이 표시됩니다.',
                     style: TextStyle(
                       fontSize: 11,
                       color: scheme.primary.withValues(alpha: 0.9),

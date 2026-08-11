@@ -17,6 +17,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/date/plan_date.dart';
 import '../../data/plan_store.dart';
+import '../../domain/milestone_query.dart';
 import '../../domain/plan_enums.dart';
 import '../../domain/plan_rollup.dart';
 import '../../domain/plan_tree.dart';
@@ -438,8 +439,20 @@ class _TimelineRow extends StatelessWidget {
     final effectiveProgress = rollup.progress;
     final isDone = rollup.isDone;
 
+    // 자손 마일스톤은 요약 바 위에 겹쳐 그린다 — 부모를 접어도 기점이 보이게.
+    // (마일스톤 자기 행은 위쪽 분기에서 이미 처리됐으므로 여기 오지 않는다)
+    final descendantMilestones = collectDescendantMilestones(tree, node.id);
+
     return _rowFrame(
       context,
+      overlays: [
+        for (final m in descendantMilestones)
+          _SummaryMilestoneMarker(
+            key: ValueKey('summary-milestone-${node.id}-${m.id}'),
+            metrics: metrics,
+            info: m,
+          ),
+      ],
       child: (effectiveStart != null && effectiveEnd != null)
           ? _GanttBar(
               metrics: metrics,
@@ -464,7 +477,11 @@ class _TimelineRow extends StatelessWidget {
     );
   }
 
-  Widget _rowFrame(BuildContext context, {required Widget child}) {
+  Widget _rowFrame(
+    BuildContext context, {
+    required Widget child,
+    List<Widget> overlays = const [],
+  }) {
     final scheme = Theme.of(context).colorScheme;
     return Container(
       decoration: BoxDecoration(
@@ -480,7 +497,7 @@ class _TimelineRow extends StatelessWidget {
       // 처리한다(TreePanel 과 동일한 정책).
       child: Opacity(
         opacity: row.isContextAncestor ? 0.55 : 1.0,
-        child: Stack(children: [child]),
+        child: Stack(children: [child, ...overlays]),
       ),
     );
   }
@@ -646,6 +663,56 @@ class _MilestoneMarkerState extends State<_MilestoneMarker> {
                   ),
                 ),
             ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// 요약(부모) 바 위에 겹쳐 그리는 **자손 마일스톤** 마커.
+///
+/// [_MilestoneMarker] 와 달리 **읽기 전용**이다 — 드래그로 옮길 수 없다.
+/// 여기서 옮길 수 있게 하면 "부모 행에서 만졌는데 실제로는 자식이 바뀌는"
+/// 혼란이 생긴다. 이동은 마일스톤 자기 행에서만 한다.
+///
+/// 자기 행 마커보다 살짝 작게 그려서, 요약 바 위의 파생 표시임이 드러나게 한다.
+class _SummaryMilestoneMarker extends StatelessWidget {
+  final GanttMetrics metrics;
+  final MilestoneMarkerInfo info;
+
+  static const double _size = 9;
+
+  const _SummaryMilestoneMarker({
+    super.key,
+    required this.metrics,
+    required this.info,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final centerX = metrics.xForDate(info.date) + metrics.dayWidth / 2;
+    final color = statusAccentColor(context, info.status);
+    final scheme = Theme.of(context).colorScheme;
+
+    return Positioned(
+      left: centerX - _size / 2,
+      top: (kRowHeight - _size) / 2,
+      width: _size,
+      height: _size,
+      // 요약 바의 드래그를 이 마커가 가로채지 않도록 포인터 이벤트를 흘려보낸다.
+      child: IgnorePointer(
+        child: Semantics(
+          label: '${info.title} (하위 마일스톤, ${info.date.toIso()})',
+          child: Transform.rotate(
+            angle: math.pi / 4,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(2),
+                border: Border.all(color: scheme.surface, width: 1.2),
+              ),
+            ),
           ),
         ),
       ),

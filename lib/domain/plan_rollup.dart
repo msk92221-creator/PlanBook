@@ -46,8 +46,10 @@ class RollupResult {
 /// [tree] 내 [nodeId] 의 유효값(rollup 결과)을 계산한다.
 ///
 /// Rollup 규칙(autoRollup==true && 자식 존재):
-/// - 유효기간 = 자식들 유효기간의 min(start) ~ max(end).
-///   (날짜가 하나도 없으면 start/end 모두 null)
+/// - 유효기간 = 자식들 유효기간의 min(start) ~ max(end) 에, **노드 자신에게
+///   저장된 날짜가 있으면 그것까지 합집합**으로 포함한다. 즉 요약 바는 자식을
+///   모두 감싸면서, 사용자가 부모에 직접 넣은 기간도 잘리지 않는다.
+///   (양쪽 다 날짜가 없으면 start/end 모두 null)
 /// - 진행률 = 자식들의 유효 진행률.
 ///   모든 자식이 estimate(non-null) 를 가지고 estimate 합이 0보다 크면
 ///   **estimate 가중평균**, 그렇지 않으면 **단순 평균**.
@@ -88,6 +90,23 @@ RollupResult computeRollup(PlanTree tree, String nodeId) {
     if (e != null) {
       if (maxEnd == null || daysBetween(maxEnd, e) > 0) maxEnd = e;
     }
+  }
+
+  // 부모 자신에게 저장된 날짜가 있으면 자식 범위와 **합집합**을 취한다.
+  //
+  // 자식 범위만 쓰면, 사용자가 부모에 직접 넣은 기간(예: "이 장비 도입은
+  // 2028년까지")이 자식을 하나 추가하는 순간 화면에서 사라진다. 반대로 부모
+  // 값만 쓰면 요약 바가 자식보다 짧아져 자식 일부가 바 밖으로 삐져나온다.
+  // 둘 다 담는 합집합이 유일하게 안전한 선택이다 —
+  // 요약 바는 항상 자식을 모두 감싸면서, 사용자가 명시한 기간도 잃지 않는다.
+  final ownStart = node.startDate;
+  final ownEnd = node.endDate;
+  if (ownStart != null &&
+      (minStart == null || daysBetween(ownStart, minStart) > 0)) {
+    minStart = ownStart;
+  }
+  if (ownEnd != null && (maxEnd == null || daysBetween(maxEnd, ownEnd) > 0)) {
+    maxEnd = ownEnd;
   }
 
   // 진행률: estimate 가중평균(모든 자식 estimate 있고 합>0) 또는 단순평균.
