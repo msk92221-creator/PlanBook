@@ -4,15 +4,13 @@
 /// 저장 경로를 만들지 않는다). 앱 기본 진입 화면은 항상 Today 이고, "마지막
 /// 화면 복원"은 이 화면에서 켤 수 있는 선택 기능이다.
 ///
-/// 동기화 설정([SyncConfig])만은 예외로, [PlanStore]가 들고 있는 데이터가
-/// 아니라 기기 로컬 전용 파일에 별도로 저장된다(왜인지는
-/// data/sync_config.dart 문서 참고). 그래서 이 화면은 [StatefulWidget]으로
-/// 그 값을 따로 로드/보관한다.
+/// 동기화(OneDrive) 상태만은 예외로 [PlanStore] 밖에 있다 — 로그인 여부와
+/// 마지막 동기화 시각은 기기마다 다른 값이라 동기화되는 데이터에 넣지 않는다.
+/// 그래서 이 화면은 [StatefulWidget] 으로 그 값을 따로 로드/보관한다.
 library;
 
 import 'dart:io';
 
-import 'package:file_selector/file_selector.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -20,10 +18,14 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import '../../data/json_plan_repository.dart';
+import '../../data/app_dirs.dart';
 import '../../data/plan_export_import.dart';
 import '../../data/plan_store.dart';
-import '../../data/sync_config.dart';
+import '../../data/sync/graph_client.dart';
+import '../../data/sync/onedrive_auth.dart';
+import '../../data/sync/sync_decision.dart';
+import '../../data/sync/sync_service.dart';
+import '../../data/sync/sync_state.dart';
 import '../../data/update_check.dart';
 import '../../domain/app_settings.dart';
 import '../../domain/plan_integrity.dart';
@@ -32,10 +34,6 @@ import '../plan/gantt_metrics.dart';
 /// GitHub 저장소(owner/repo) — 업데이트 확인이 조회할 대상.
 const String kUpdateRepoOwner = 'msk92221-creator';
 const String kUpdateRepoName = 'PlanBook';
-
-/// 동기화 폴더 선택 시, 이미 데이터가 있는 폴더를 발견하면 사용자에게 묻는
-/// 세 가지 선택지.
-enum _SyncFolderChoice { cancel, useFolder, overwriteFolder }
 
 class SettingsPage extends StatefulWidget {
   final PlanStore store;
@@ -50,32 +48,53 @@ class _SettingsPageState extends State<SettingsPage> {
   PlanStore get store => widget.store;
 
   Directory? _localDir;
+  OneDriveAuth? _auth;
 
-  /// 동기화 설정 로드 전 기본값은 "꺼짐"이다 — 로딩 스피너를 따로 두지
-  /// 않는다. 실제 기기에서는 [defaultLocalDir]가 거의 즉시 응답하므로 켜져
-  /// 있는 경우에도 잠깐 깜빡이는 정도이고, path_provider 채널이 없는 환경
-  /// (위젯 테스트 등)에서도 화면이 "로딩 중" 애니메이션에 영구히 묶이지
-  /// 않는다(끝없이 도는 스피너는 pumpAndSettle 을 무한 대기시킨다).
-  SyncConfig _syncConfig = const SyncConfig();
+  /// 로그인 여부. 조회 전에는 false 로 두고, 확인되면 갱신한다 —
+  /// 로딩 스피너를 두지 않는 이유는 끝없이 도는 애니메이션이 위젯 테스트의
+  /// pumpAndSettle 을 무한 대기시키기 때문이다.
+  bool _signedIn = false;
+  SyncState _syncState = SyncState.never;
+
+  /// 동기화가 진행 중인 동안 버튼을 잠그기 위한 플래그.
+  bool _busy = false;
 
   @override
   void initState() {
     super.initState();
-    _loadSyncConfig();
+    _loadSyncStatus();
   }
 
-  Future<void> _loadSyncConfig() async {
+  /// path_provider / 보안 저장소는 플랫폼 채널을 타므로, 채널이 없는 환경
+  /// (위젯 테스트 등)에서도 화면이 죽지 않아야 한다 — 실패하면 로그아웃
+  /// 상태로 둔다.
+  Future<void> _loadSyncStatus() async {
     try {
       final localDir = await defaultLocalDir();
-      final config = await loadSyncConfig(localDir);
+      final auth = OneDriveAuth();
+      final signedIn = await auth.isSignedIn;
+      final state = await loadSyncState(localDir);
       if (!mounted) return;
       setState(() {
         _localDir = localDir;
-        _syncConfig = config;
+        _auth = auth;
+        _signedIn = signedIn;
+        _syncState = state;
       });
     } catch (_) {
-      // 조회 실패 시 이미 기본값(동기화 꺼짐)이므로 할 일 없음.
+      // 기본값(로그아웃)이 이미 안전한 상태다.
     }
+  }
+
+  SyncService? _buildService() {
+    final auth = _auth;
+    final dir = _localDir;
+    if (auth == null || dir == null) return null;
+    return SyncService(
+      store: store,
+      graph: GraphClient(accessToken: auth.accessToken),
+      localDir: dir,
+    );
   }
 
   @override
@@ -187,109 +206,102 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 
   /// "동기화" 섹션 본문. 설정 로드 전에는 진행 표시만 보여준다.
+  /// "동기화" 섹션. 계정 로그인 / 지금 동기화 / 마지막 동기화 시각.
   Widget _buildSyncSection(BuildContext context) {
-    final config = _syncConfig;
+    if (!isOneDriveConfigured) {
+      return const ListTile(
+        leading: Icon(Icons.cloud_off_outlined),
+        title: Text('동기화를 쓸 수 없습니다'),
+        subtitle: Text('이 빌드에는 OneDrive 클라이언트 ID 가 설정되지 않았습니다.'),
+      );
+    }
+
+    final last = _syncState.lastSyncedAt;
     return Column(
       children: [
         ListTile(
-          leading: const Icon(Icons.cloud_sync_outlined),
-          title: const Text('동기화 폴더 (OneDrive 등)'),
+          leading: Icon(_signedIn ? Icons.cloud_done_outlined : Icons.cloud_outlined),
+          title: Text(_signedIn ? 'OneDrive 연결됨' : 'OneDrive 계정 연결'),
           subtitle: Text(
-            config.isEnabled
-                ? '${config.folderPath}${Platform.pathSeparator}PlanBook\n'
-                    '다른 폴더로 바꾸려면 다시 선택하세요. '
-                    '적용하려면 앱을 재시작해야 합니다.'
-                : '설정 안 함 — 이 기기에만 저장됩니다.\n'
-                    'OneDrive 등 동기화 폴더를 지정하면, 그 폴더를 통해 다른 기기와 '
-                    '같은 데이터를 공유할 수 있습니다.',
+            _signedIn
+                ? '계획 데이터가 OneDrive 앱 폴더에 저장됩니다. '
+                    '다른 기기에서도 같은 계정으로 로그인하면 같은 데이터를 씁니다.'
+                : 'Microsoft 계정으로 로그인하면 Windows/Android 사이에서 '
+                    '계획을 주고받을 수 있습니다.',
           ),
           isThreeLine: true,
-          onTap: () => _pickSyncFolder(context),
+          trailing: _signedIn
+              ? TextButton(
+                  onPressed: _busy ? null : _signOut,
+                  child: const Text('연결 해제'),
+                )
+              : FilledButton(
+                  onPressed: _busy ? null : _signIn,
+                  child: const Text('로그인'),
+                ),
         ),
-        if (config.isEnabled)
+        if (_signedIn)
           ListTile(
-            leading: const Icon(Icons.link_off),
-            title: const Text('동기화 해제'),
-            subtitle: const Text('현재 데이터를 이 기기 로컬 저장 위치로 복사한 뒤 폴더 연결을 끊습니다.'),
-            onTap: () => _disableSync(context),
+            leading: _busy
+                ? const SizedBox(
+                    width: 24,
+                    height: 24,
+                    child: Center(
+                      child: SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    ),
+                  )
+                : const Icon(Icons.sync),
+            title: const Text('지금 동기화'),
+            subtitle: Text(
+              last == null
+                  ? '아직 동기화한 적이 없습니다.'
+                  : '마지막 동기화: ${_formatTime(last)}',
+            ),
+            onTap: _busy ? null : _syncNow,
           ),
       ],
     );
   }
 
-  Future<void> _pickSyncFolder(BuildContext context) async {
-    final messenger = ScaffoldMessenger.of(context);
-    final picked = await getDirectoryPath(
-      confirmButtonText: '이 폴더로 동기화',
-    );
-    if (picked == null || picked.isEmpty) return;
-    if (!context.mounted) return;
-
-    final targetDir = syncDataDir(picked);
-    final existing = await JsonPlanRepository(directory: targetDir).load();
-    if (!context.mounted) return;
-
-    if (existing != null) {
-      final choice = await showDialog<_SyncFolderChoice>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('이미 데이터가 있는 폴더입니다'),
-          content: Text(
-            '선택한 폴더에 작업 ${existing.nodes.length}개, '
-            '프로젝트 ${existing.projects.length}개가 들어 있는 PlanBook 데이터가 이미 '
-            '있습니다.\n\n어떻게 할까요?',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(ctx).pop(_SyncFolderChoice.cancel),
-              child: const Text('취소'),
-            ),
-            TextButton(
-              onPressed: () =>
-                  Navigator.of(ctx).pop(_SyncFolderChoice.overwriteFolder),
-              child: const Text('현재 기기 데이터로 덮어쓰기'),
-            ),
-            FilledButton(
-              onPressed: () =>
-                  Navigator.of(ctx).pop(_SyncFolderChoice.useFolder),
-              child: const Text('폴더 데이터 사용'),
-            ),
-          ],
-        ),
-      );
-      if (choice == null || choice == _SyncFolderChoice.cancel) return;
-      if (choice == _SyncFolderChoice.overwriteFolder) {
-        await JsonPlanRepository(directory: targetDir)
-            .save(store.exportableSnapshot());
-      }
-      // useFolder: 폴더에 이미 있는 데이터를 그대로 둔다. 재시작 시 그 데이터로 열린다.
-    } else {
-      // 빈 폴더면 현재 데이터를 그대로 복사해 둔다(전환 과정에서 데이터 유실 방지).
-      await JsonPlanRepository(directory: targetDir)
-          .save(store.exportableSnapshot());
-    }
-
-    final localDir = _localDir ?? await defaultLocalDir();
-    final newConfig = SyncConfig(folderPath: picked);
-    await saveSyncConfig(localDir, newConfig);
-    if (!mounted) return;
-    setState(() {
-      _localDir = localDir;
-      _syncConfig = newConfig;
-    });
-    messenger.showSnackBar(
-      const SnackBar(content: Text('동기화 폴더가 설정되었습니다. 적용하려면 앱을 재시작하세요.')),
-    );
+  String _formatTime(DateTime t) {
+    String p2(int n) => n.toString().padLeft(2, '0');
+    return '${t.year}-${p2(t.month)}-${p2(t.day)} ${p2(t.hour)}:${p2(t.minute)}';
   }
 
-  Future<void> _disableSync(BuildContext context) async {
+  Future<void> _signIn() async {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() => _busy = true);
+    try {
+      final auth = _auth ?? OneDriveAuth();
+      await auth.signIn();
+      if (!mounted) return;
+      setState(() {
+        _auth = auth;
+        _signedIn = true;
+      });
+      messenger.showSnackBar(
+        const SnackBar(content: Text('OneDrive 에 연결되었습니다. 이제 동기화할 수 있습니다.')),
+      );
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('로그인 실패: $e')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _signOut() async {
     final messenger = ScaffoldMessenger.of(context);
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('동기화 해제'),
+        title: const Text('연결 해제'),
         content: const Text(
-            '현재 데이터를 이 기기의 로컬 저장 위치로 복사한 뒤 동기화 폴더 연결을 끊습니다. 계속할까요?'),
+            'OneDrive 연결을 끊습니다. 이 기기의 계획 데이터는 그대로 남고, '
+            'OneDrive 에 올라간 내용도 지워지지 않습니다.'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(ctx).pop(false),
@@ -297,29 +309,106 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
           FilledButton(
             onPressed: () => Navigator.of(ctx).pop(true),
-            child: const Text('해제'),
+            child: const Text('연결 해제'),
           ),
         ],
       ),
     );
     if (confirmed != true) return;
 
-    final localDir = _localDir ?? await defaultLocalDir();
-    await JsonPlanRepository(directory: localDir)
-        .save(store.exportableSnapshot());
-    await saveSyncConfig(localDir, const SyncConfig());
+    await (_auth ?? OneDriveAuth()).signOut();
     if (!mounted) return;
-    setState(() {
-      _localDir = localDir;
-      _syncConfig = const SyncConfig();
-    });
+    setState(() => _signedIn = false);
     messenger.showSnackBar(
-      const SnackBar(content: Text('동기화가 해제되었습니다. 적용하려면 앱을 재시작하세요.')),
+      const SnackBar(content: Text('연결이 해제되었습니다.')),
     );
   }
 
-  /// GitHub 최신 릴리스를 확인하고, 더 새 버전이 있으면 다운로드 여부를 묻는다.
-  /// **자동으로 다운로드/설치하지 않는다** — 항상 사용자가 "다운로드"를
+  Future<void> _syncNow() async {
+    final messenger = ScaffoldMessenger.of(context);
+    final svc = _buildService();
+    if (svc == null) return;
+
+    setState(() => _busy = true);
+    try {
+      final result = await svc.sync();
+      if (!mounted) return;
+
+      if (result.outcome == SyncOutcome.conflict) {
+        await _resolveConflict(svc, result);
+      } else {
+        messenger.showSnackBar(SnackBar(content: Text(switch (result.outcome) {
+          SyncOutcome.upToDate => '이미 최신 상태입니다.',
+          SyncOutcome.uploaded => '이 기기 내용을 OneDrive 에 올렸습니다.',
+          SyncOutcome.downloaded => 'OneDrive 의 최신 내용을 받아왔습니다.',
+          SyncOutcome.conflict => '',
+        })));
+      }
+      await _refreshSyncState();
+    } catch (e) {
+      if (mounted) {
+        messenger.showSnackBar(SnackBar(content: Text('동기화 실패: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 충돌 — **자동으로 한쪽을 버리지 않는다.** 사용자가 고르게 하고, 어느
+  /// 쪽을 고르든 버려지는 쪽은 백업 파일로 남는다([SyncService.resolveConflict]).
+  Future<void> _resolveConflict(SyncService svc, SyncResult result) async {
+    final messenger = ScaffoldMessenger.of(context);
+    final localCount = store.tree.allNodes.length;
+    final remoteCount = result.remoteSnapshot?.nodes.length;
+
+    final choice = await showDialog<ConflictResolution>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('양쪽이 모두 바뀌었습니다'),
+        content: Text(
+          '이 기기와 OneDrive 양쪽에서 각각 내용이 바뀌어 자동으로 합칠 수 없습니다.\n\n'
+          '• 이 기기: 작업 $localCount개\n'
+          '• OneDrive: 작업 ${remoteCount ?? '?'}개\n\n'
+          '어느 쪽을 남길까요? 선택하지 않은 쪽은 이 기기에 백업 파일로 저장됩니다.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('나중에'),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.of(ctx).pop(ConflictResolution.keepRemote),
+            child: const Text('OneDrive 것 사용'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(ctx).pop(ConflictResolution.keepLocal),
+            child: const Text('이 기기 것 사용'),
+          ),
+        ],
+      ),
+    );
+    if (choice == null) return;
+
+    final outcome = await svc.resolveConflict(choice);
+    if (!mounted) return;
+    messenger.showSnackBar(SnackBar(
+      content: Text(outcome == SyncOutcome.uploaded
+          ? '이 기기 내용으로 맞췄습니다.'
+          : 'OneDrive 내용으로 맞췄습니다.'),
+    ));
+  }
+
+  Future<void> _refreshSyncState() async {
+    final dir = _localDir;
+    if (dir == null) return;
+    final state = await loadSyncState(dir);
+    if (!mounted) return;
+    setState(() => _syncState = state);
+  }
+
+
   /// 눌러야 브라우저/OS 다운로드 관리자가 파일을 받는다.
   Future<void> _checkUpdate(BuildContext context) async {
     final messenger = ScaffoldMessenger.of(context);

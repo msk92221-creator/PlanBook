@@ -32,6 +32,23 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+
+        <!-- OneDrive 로그인(flutter_web_auth_2) 콜백 수신용.
+             브라우저가 planbook://auth 로 리디렉션하면 이 액티비티가 받아
+             플러그인에 결과를 넘긴다. Azure 앱 등록의 리디렉션 URI
+             (모바일 및 데스크톱 애플리케이션 플랫폼)에 planbook://auth 가
+             등록돼 있어야 동작한다. -->
+        <activity
+            android:name="com.linusu.flutter_web_auth_2.CallbackActivity"
+            android:exported="true"
+            android:taskAffinity="">
+            <intent-filter android:label="flutter_web_auth_2">
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="planbook" />
+            </intent-filter>
+        </activity>
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

@@ -4,13 +4,12 @@ import 'package:flutter/material.dart';
 
 import 'data/json_plan_repository.dart';
 import 'data/plan_store.dart';
-import 'data/sync_config.dart';
+import 'data/app_dirs.dart';
 import 'ui/app.dart';
 
 /// PlanBook 진입점.
 ///
 /// - 앱 지원 디렉터리(`appSupport/PlanBook`)를 저장 위치로 사용.
-///   단, 동기화 폴더가 설정돼 있으면 그 폴더 아래를 대신 사용한다.
 /// - [PlanStore] 를 생성해 화면에 주입.
 /// - **창을 닫을 때 저장이 끝날 때까지 종료를 미룬다**([_LifecycleFlush]).
 Future<void> main() async {
@@ -27,9 +26,7 @@ Future<void> main() async {
 
 Future<PlanStore> _buildStore() async {
   final localDir = await defaultLocalDir();
-  final config = await loadSyncConfig(localDir);
-  final dataDir = resolveDataDir(localDir, config);
-  final repo = JsonPlanRepository(directory: dataDir);
+  final repo = JsonPlanRepository(directory: localDir);
   final store = PlanStore(repository: repo);
   return store;
 }
