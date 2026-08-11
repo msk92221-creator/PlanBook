@@ -634,7 +634,23 @@ class _TreeRow extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 8),
+          // 더보기(⋮) 버튼 — 우클릭/롱프레스로 여는 컨텍스트 메뉴와 **완전히
+          // 같은 메뉴**를 단순 탭으로도 열 수 있게 한다. 터치에서는 롱프레스가
+          // 바깥의 [LongPressDraggable](재정렬 드래그) 과 같은 제스처 계열이라
+          // 경합에서 밀려 컨텍스트 메뉴가 아예 안 뜨는 경우가 있어(우클릭이
+          // 없는 모바일에서 실제로 보고된 문제), 일반 탭 하나만으로 확실하게
+          // 열리는 진입점을 별도로 둔다.
+          if (interactive)
+            InkWell(
+              customBorder: const CircleBorder(),
+              onTap: () {},
+              onTapDown: (d) => onContextMenu(d.globalPosition),
+              child: const Padding(
+                padding: EdgeInsets.all(4),
+                child: Icon(Icons.more_vert, size: 18),
+              ),
+            ),
+          const SizedBox(width: 4),
         ],
         ),
       ),
