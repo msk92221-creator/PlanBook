@@ -29,6 +29,97 @@ import 'tree_flatten.dart';
 /// 드롭 영역(히트 테스트 결과). null = 드롭 불가.
 enum DropZone { before, after, child }
 
+/// [node] 가 자기 부모의 형제들 중 마지막인지("└" vs "├" 판정에 쓴다).
+/// 부모가 없으면(루트) 항상 true 로 본다.
+bool _isLastChild(PlanTree tree, PlanNode node) {
+  final siblings = tree.childrenOf(node.parentId);
+  if (siblings.isEmpty) return true;
+  return siblings.last.id == node.id;
+}
+
+/// [node] 의 조상들(직속 부모 제외, 루트→직속부모 앞 순서) 각각이 "형제가 더
+/// 남아 있는지"(= 마지막 자식이 아닌지) 를 담은 리스트. 트리 안내선을 그릴 때
+/// 각 들여쓰기 칸이 세로선으로 이어져야 하는지 판단하는 데 쓴다 — 조상이
+/// 마지막 자식이면 그 조상 아래로는 더 그릴 형제가 없으니 안내선을 끊는다.
+List<bool> _ancestorContinuations(PlanTree tree, PlanNode node) {
+  final ancestors = tree.ancestorsOf(node.id).reversed.toList(); // 루트→직속부모.
+  if (ancestors.isEmpty) return const [];
+  final withoutImmediateParent = ancestors.sublist(0, ancestors.length - 1);
+  return [for (final a in withoutImmediateParent) !_isLastChild(tree, a)];
+}
+
+enum _GuideKind { straight, corner, tee }
+
+/// 트리 계층 안내선("이 항목은 위 항목에 속해 있다"는 걸 시각적으로 보여줌).
+/// [_GuideKind.corner]("└") 는 이 행이 부모의 마지막 자식일 때,
+/// [_GuideKind.tee]("├") 는 더 뒤에 형제가 남아 있을 때 쓴다.
+class _TreeGuidePainter extends CustomPainter {
+  final _GuideKind kind;
+  final Color color;
+  const _TreeGuidePainter({required this.kind, required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 1.2
+      ..style = PaintingStyle.stroke;
+    final midX = size.width / 2;
+    final midY = size.height / 2;
+    switch (kind) {
+      case _GuideKind.straight:
+        canvas.drawLine(Offset(midX, 0), Offset(midX, size.height), paint);
+      case _GuideKind.corner:
+        canvas.drawLine(Offset(midX, 0), Offset(midX, midY), paint);
+        canvas.drawLine(Offset(midX, midY), Offset(size.width, midY), paint);
+      case _GuideKind.tee:
+        canvas.drawLine(Offset(midX, 0), Offset(midX, size.height), paint);
+        canvas.drawLine(Offset(midX, midY), Offset(size.width, midY), paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _TreeGuidePainter oldDelegate) =>
+      oldDelegate.kind != kind || oldDelegate.color != color;
+}
+
+/// [row] 의 들여쓰기 칸들을 안내선으로 채운 위젯. depth==0 이면 빈 위젯.
+class _TreeGuides extends StatelessWidget {
+  final PlanTree tree;
+  final PlanNode node;
+  final int depth;
+
+  const _TreeGuides({required this.tree, required this.node, required this.depth});
+
+  @override
+  Widget build(BuildContext context) {
+    if (depth == 0) return const SizedBox.shrink();
+    final color = Theme.of(context).colorScheme.outline.withValues(alpha: 0.35);
+    final continuations = _ancestorContinuations(tree, node);
+    final isLast = _isLastChild(tree, node);
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (var i = 0; i < depth; i++)
+          SizedBox(
+            width: 16,
+            height: kRowHeight,
+            child: i < depth - 1
+                ? (continuations[i]
+                    ? CustomPaint(painter: _TreeGuidePainter(kind: _GuideKind.straight, color: color))
+                    : const SizedBox.shrink())
+                : CustomPaint(
+                    painter: _TreeGuidePainter(
+                      kind: isLast ? _GuideKind.corner : _GuideKind.tee,
+                      color: color,
+                    ),
+                  ),
+          ),
+      ],
+    );
+  }
+}
+
 class TreePanel extends StatefulWidget {
   final PlanTree tree;
   final List<FlatRow> rows;
@@ -467,7 +558,6 @@ class _TreeRow extends StatelessWidget {
     // 행만 4상태(status) 로 표시한다(Gantt bar 와 동일한 정책).
     final status = rollup.computedFromChildren ? null : node.status;
     final scheme = Theme.of(context).colorScheme;
-    final indent = row.depth * 16.0;
 
     // DnD 표시 색/선.
     final Color? borderColor;
@@ -513,7 +603,8 @@ class _TreeRow extends StatelessWidget {
         opacity: row.isContextAncestor ? 0.55 : 1.0,
         child: Row(
         children: [
-          SizedBox(width: 4 + indent),
+          const SizedBox(width: 4),
+          _TreeGuides(tree: tree, node: node, depth: row.depth),
           // 접기/펼치기 토글.
           SizedBox(
             width: 28,

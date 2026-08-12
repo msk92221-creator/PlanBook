@@ -18,6 +18,7 @@ import '../../domain/today_query.dart';
 import '../../domain/workload_query.dart';
 import '../common/navigation.dart';
 import '../common/task_row.dart';
+import '../common/ymd_date_picker.dart';
 import '../plan/node_edit_dialog.dart';
 import '../settings/settings_page.dart';
 
@@ -242,8 +243,8 @@ class _TodayPageState extends State<TodayPage> {
 
     if (option == RescheduleOption.specificDate) {
       if (!mounted) return;
-      final picked = await showDatePicker(
-        context: context,
+      final picked = await showYmdDatePicker(
+        context,
         initialDate: _store.today.toDateTime(),
         firstDate: DateTime(2000),
         lastDate: DateTime(2100),

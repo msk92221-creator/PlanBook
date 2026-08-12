@@ -30,6 +30,7 @@ import '../../domain/plan_tree.dart';
 import '../../domain/project.dart';
 import '../../domain/recurrence.dart';
 import '../../domain/tag.dart';
+import '../common/ymd_date_picker.dart';
 
 /// 편집 다이얼로그가 반환할 변경 결과. null 은 "취소".
 class NodeEditResult {
@@ -261,8 +262,8 @@ class _NodeEditDialogState extends State<NodeEditDialog> {
     final now = DateTime.now();
     final initial = (isStart ? _start : _end)?.toDateTime() ??
         DateTime(now.year, now.month, now.day);
-    final picked = await showDatePicker(
-      context: context,
+    final picked = await showYmdDatePicker(
+      context,
       initialDate: initial,
       firstDate: DateTime(2000),
       lastDate: DateTime(2100),

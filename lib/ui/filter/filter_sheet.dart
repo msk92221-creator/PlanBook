@@ -9,6 +9,7 @@ import '../../core/date/plan_date.dart';
 import '../../data/plan_store.dart';
 import '../../domain/plan_enums.dart';
 import '../../domain/plan_filter.dart';
+import '../common/ymd_date_picker.dart';
 
 /// 편집 결과를 반환한다. 취소하면 null.
 Future<PlanFilterState?> showFilterSheet(
@@ -64,8 +65,8 @@ class _FilterSheetState extends State<_FilterSheet> {
     final initial = (isStart ? _f.customStartDate : _f.customEndDate)
             ?.toDateTime() ??
         DateTime(now.year, now.month, now.day);
-    final picked = await showDatePicker(
-      context: context,
+    final picked = await showYmdDatePicker(
+      context,
       initialDate: initial,
       firstDate: DateTime(2000),
       lastDate: DateTime(2100),
