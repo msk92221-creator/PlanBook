@@ -81,9 +81,36 @@ jobs:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           channel: stable
       - run: flutter pub get
-      # 서명 설정은 기존 릴리스(v1.0.0/v1.0.1)와 동일하게 android/app 의
-      # 기본값(디버그 키)을 그대로 쓴다. 여기서 바꾸지 않는다.
+      # release APK 를 CI 시크릿으로 주입한 고정 keystore 로 서명한다.
+      # 이 스텝 없이 조용히 debug 키로 폴백하면 덮어쓰기 불가능한 APK 가 또 나가므로,
+      # 시크릿이 비어 있으면 명시적으로 실패시킨다.
+      - name: Prepare release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 시크릿이 없습니다. release APK 서명용 keystore 없이 빌드할 수 없습니다. CI 시크릿(keystore base64, store password, key alias, key password)을 먼저 설정하세요."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 --decode > android/app/planbook-release.jks
+          printf 'storeFile=planbook-release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > android/key.properties
       - run: flutter build apk --release
+      # 서명 인증서의 SHA-256 지문을 로그에 남겨, 다음 릴리스 때 서명이 같은지
+      # 사람이 눈으로 확인할 수 있게 한다. apksigner 는 Android SDK build-tools 에 있다.
+      - name: Verify signing certificate
+        continue-on-error: true
+        run: |
+          apk="build/app/outputs/flutter-apk/app-release.apk"
+          apksigner="$(echo "$ANDROID_SDK_ROOT"/build-tools/*/apksigner | tr ' ' '\n' | sort -V | tail -n1)"
+          if [ -z "$apksigner" ] || [ ! -x "$apksigner" ]; then
+            echo "apksigner 를 찾을 수 없어 서명 검증을 건너뜁니다."
+            exit 0
+          fi
+          "$apksigner" verify --print-certs "$apk" | grep -E 'SHA-256'
       - name: Rename apk
         run: |
           mv build/app/outputs/flutter-apk/app-release.apk \
