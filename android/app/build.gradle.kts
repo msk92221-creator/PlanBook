@@ -1,3 +1,6 @@
+import java.util.Properties
+import java.io.FileInputStream
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
@@ -7,10 +10,12 @@ plugins {
 // CI 가 android/key.properties 를 주입하면 release 빌드를 고정 keystore 로 서명한다.
 // 파일이 없는 로컬 환경에서는 아래 buildTypes.release 의 폴백에 따라 debug 키로 빌드되므로
 // `flutter run --release` 가 그대로 동작한다.
-val keystoreProperties = java.util.Properties()
+// java.util.Properties 처럼 완전 경로로 쓰면 안드로이드 플러그인이 등록하는 `java`
+// 확장(extension)에 가려 컴파일 오류가 나므로, 반드시 import 로 끌어와 써야 한다.
+val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("key.properties")
 if (keystorePropertiesFile.exists()) {
-    keystoreProperties.load(java.io.FileInputStream(keystorePropertiesFile))
+    keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
 android {
