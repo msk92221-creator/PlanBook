@@ -16,6 +16,7 @@ import 'package:flutter/foundation.dart';
 import '../core/date/plan_date.dart';
 import '../core/ids.dart';
 import '../domain/app_settings.dart';
+import '../domain/bar_color.dart';
 import '../domain/plan_enums.dart';
 import '../domain/plan_node.dart';
 import '../domain/plan_tree.dart';
@@ -322,6 +323,7 @@ class PlanStore extends ChangeNotifier {
     String? unit,
     NodeKind nodeKind = NodeKind.project,
     bool autoRollup = true,
+    BarColor barColor = BarColor.none,
     String? id,
     String? recurrenceFreq,
     List<int> recurrenceWeekdays = const [],
@@ -351,6 +353,7 @@ class PlanStore extends ChangeNotifier {
         sortOrder: sortOrder,
         nodeKind: nodeKind,
         autoRollup: autoRollup,
+        barColor: barColor,
         recurrenceFreq: recurrenceFreq,
         recurrenceWeekdays: List<int>.unmodifiable(recurrenceWeekdays),
         recurrenceDayOfMonth: recurrenceDayOfMonth,

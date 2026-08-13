@@ -14,9 +14,11 @@ import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/date/plan_date.dart';
 import '../../data/plan_store.dart';
+import '../../domain/bar_color.dart';
 import '../../domain/milestone_query.dart';
 import '../../domain/plan_enums.dart';
 import '../../domain/plan_rollup.dart';
@@ -25,11 +27,19 @@ import 'gantt_metrics.dart';
 import 'gantt_theme.dart';
 import 'tree_flatten.dart';
 
+/// "열린 기간"(종료일 미정) 막대의 semantics 라벨(위젯 테스트 검증용).
+/// [kDoneSemantics]/[kOnHoldSemantics] 와 같은 목적이지만, 상수 파일(gantt_theme.dart)
+/// 은 이번 변경 범위가 아니므로 같은 스타일의 로컬 상수로 여기에 둔다.
+const String kOpenEndedSemantics = '종료일 미정';
+
 /// 우측 Gantt 타임라인 패널.
 ///
 /// [verticalController] 는 좌측 트리 패널과 동기화되는 세로 스크롤 컨트롤러(외부 주입).
 /// [horizontalController] 는 가로 스크롤 컨트롤러(초기 "오늘" 위치 보정에도 사용).
-class GanttTimeline extends StatelessWidget {
+///
+/// **두 손가락(핀치) 확대/축소** 가 추가됐다. [StatefulWidget] 인 이유는 핀치 판정을
+/// 위해 현재 눌려 있는 포인터들을 직접 추적해야 하기 때문이다.
+class GanttTimeline extends StatefulWidget {
   final PlanTree tree;
   final List<FlatRow> rows;
   final GanttMetrics metrics;
@@ -47,6 +57,11 @@ class GanttTimeline extends StatelessWidget {
   /// 현재 강조(선택) 표시할 노드 id(Today/Calendar/검색에서 넘어올 때 등).
   final String? selectedNodeId;
 
+  /// **핀치 / Ctrl+휠 로 줌 단계가 바뀌었을 때** 호출. [PlanPage] 가 줌 상태를
+  /// 소유하고 있으므로, 여기서는 새 줌을 알려주기만 한다(상태를 직접 바꾸지 않는다).
+  /// null 이면(단독 테스트 등) 핀치/휠 줌이 비활성이다.
+  final ValueChanged<GanttZoomLevel>? onZoomChange;
+
   const GanttTimeline({
     super.key,
     required this.tree,
@@ -57,69 +72,265 @@ class GanttTimeline extends StatelessWidget {
     this.horizontalController,
     this.store,
     this.selectedNodeId,
+    this.onZoomChange,
   });
 
   @override
+  State<GanttTimeline> createState() => _GanttTimelineState();
+}
+
+class _GanttTimelineState extends State<GanttTimeline> {
+  // ----- 핀치 줌 상태 -----
+  // **왜 GestureDetector(onScaleUpdate) 가 아니라 Listener 로 포인터를 직접 세는가**:
+  // ScaleGestureRecognizer 는 손가락 1개일 때도 제스처 아레나에 참여해서, 가로/세로
+  // 스크롤과 bar 드래그(날짜를 실제로 바꾸는 기능) 를 이겨버린다. 그러면 스크롤이
+  // 안 되거나 막대를 못 옮기게 된다. Listener 는 아레나에 참여하지 않으므로 기존
+  // 포인터 동작(스크롤/드래그) 이 100% 그대로 살아 있다. 핀치는 "포인터가 2개 이상"
+  // 일 때만 판정하므로 1개 손가락 동작은 전혀 간섭하지 않는다.
+  // → 절대 무심코 GestureDetector(onScale*) 로 바꾸지 말 것. 스크롤이 죽는다.
+
+  /// 현재 눌려 있는 포인터(id → 최근 뷰 로컬 위치). 1개 = 일반 드래그/스크롤,
+  /// 2개 이상 = 핀치 후보.
+  final Map<int, Offset> _pointers = {};
+
+  /// 핀치 "기준 거리". 두 번째 손가락이 닿은 순간(또는 한 단계 줌이 바뀐 직후) 의
+  /// 두 포인터 사이 거리. 여기서부터 배율을 재서 임계값을 넘으면 한 단계씩 바꾼다.
+  double? _pinchBaseDistance;
+
+  /// 줌이 바뀐 뒤 적용할 가로 스크롤 오프셋 보정 정보.
+  /// (핀치/휠 중심의 날짜, 그 중심의 뷰 로컬 x).
+  /// 줌 변경 → [PlanPage] 가 metrics 를 새로 계산해 rebuild → [didUpdateWidget] 에서
+  /// 새 metrics 기준으로 보정을 적용한다(동기적으론 새 metrics 가 아직 없다).
+  ({PlanDate focalDate, double focalLocalX})? _pendingScroll;
+  GanttZoomLevel? _pendingFromZoom;
+
+  ScrollController? get _hCtrl => widget.horizontalController;
+
+  @override
+  void didUpdateWidget(covariant GanttTimeline oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 줌이 실제로 바뀌어 새 metrics 가 들어왔으면, 보류 중이던 스크롤 보정을 적용한다.
+    final pending = _pendingScroll;
+    if (pending != null &&
+        _pendingFromZoom != null &&
+        widget.metrics.zoom != _pendingFromZoom) {
+      _pendingScroll = null;
+      _pendingFromZoom = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _applyScrollCorrection(pending.focalDate, pending.focalLocalX);
+      });
+    }
+  }
+
+  /// 뷰 로컬 좌표를 구하기 위한 렌더 박스(없으면 null).
+  RenderBox? get _box => context.findRenderObject() as RenderBox?;
+
+  Offset _localOf(Offset global) {
+    final box = _box;
+    return box != null ? box.globalToLocal(global) : Offset.zero;
+  }
+
+  /// 두 점 사이 거리.
+  double _distance(Offset a, Offset b) => (a - b).distance;
+
+  /// 현재 두 개 포인터 사이 거리(2개 이상이면 처음 2개 기준).
+  double? _currentPairDistance() {
+    if (_pointers.length < 2) return null;
+    final iter = _pointers.values.take(2).toList();
+    return _distance(iter[0], iter[1]);
+  }
+
+  /// 핀치 중심(두 손가락의 가운데) 의 뷰 로컬 좌표.
+  Offset _pinchFocalLocal() {
+    final iter = _pointers.values.take(2).toList();
+    return (iter[0] + iter[1]) / 2;
+  }
+
+  void _onPointerDown(PointerDownEvent event) {
+    _pointers[event.pointer] = _localOf(event.position);
+    // 두 번째 손가락이 닿으면 핀치 기준 거리를 잡는다.
+    if (_pointers.length == 2) {
+      _pinchBaseDistance = _currentPairDistance();
+    }
+  }
+
+  void _onPointerMove(PointerMoveEvent event) {
+    if (!_pointers.containsKey(event.pointer)) return;
+    _pointers[event.pointer] = _localOf(event.position);
+    if (_pointers.length >= 2) _evaluatePinch();
+  }
+
+  void _onPointerUp(PointerUpEvent event) {
+    _pointers.remove(event.pointer);
+    if (_pointers.length < 2) _pinchBaseDistance = null;
+  }
+
+  void _onPointerCancel(PointerCancelEvent event) {
+    _pointers.remove(event.pointer);
+    if (_pointers.length < 2) _pinchBaseDistance = null;
+  }
+
+  /// 현재 두 손가락 거리의 배율을 기준 거리와 비교해 한 단계 줌을 바꾼다.
+  void _evaluatePinch() {
+    final base = _pinchBaseDistance;
+    final cur = _currentPairDistance();
+    if (base == null || cur == null || base <= 0) return;
+
+    final ratio = cur / base;
+    GanttZoomLevel? next;
+    if (ratio >= kPinchZoomInRatio) {
+      next = _zoomIn(widget.metrics.zoom);
+    } else if (ratio <= kPinchZoomOutRatio) {
+      next = _zoomOut(widget.metrics.zoom);
+    }
+    if (next == null) return; // 경계 밖이거나 임계값 미달 → 아무것도 안 함.
+
+    // 한 단계 바뀌었으니 기준 거리를 현재 거리로 리셋. 이래야 한 번의 핀치 동작이
+    // 여러 단계를 순식간에 건너뛰지 않는다(손가락을 더 벌려야 다음 단계로 간다).
+    _pinchBaseDistance = cur;
+    final focal = _pinchFocalLocal();
+    _requestZoom(next, focal.dx);
+  }
+
+  /// [newZoom] 으로 줌을 바꾸도록 [PlanPage] 에 알리고, 줌 후 스크롤 보정을 예약.
+  void _requestZoom(GanttZoomLevel newZoom, double focalLocalX) {
+    if (widget.onZoomChange == null) return; // 단독 테스트 등: 줌 변경 불가.
+    final offset = (_hCtrl?.hasClients ?? false) ? _hCtrl!.offset : 0.0;
+    // 핀치/휠 중심이 가리키는 날짜(현재 metrics + 현재 스크롤 오프셋 기준).
+    final focalDate = widget.metrics.dayColumnForX(offset + focalLocalX);
+    _pendingScroll = (focalDate: focalDate, focalLocalX: focalLocalX);
+    _pendingFromZoom = widget.metrics.zoom;
+    widget.onZoomChange!(newZoom);
+  }
+
+  /// 줌 변경 후 새 metrics 로, 보고 있던 날짜가 같은 화면 위치에 오도록 보정.
+  void _applyScrollCorrection(PlanDate focalDate, double focalLocalX) {
+    final ctrl = _hCtrl;
+    if (ctrl == null || !ctrl.hasClients) return;
+    final newX = widget.metrics.xForDate(focalDate) - focalLocalX;
+    ctrl.jumpTo(newX.clamp(0.0, ctrl.position.maxScrollExtent));
+  }
+
+  /// 데스크톱(Windows 등) 에서 **Ctrl + 마우스 휠** 로 줌. 핀치가 없는 환경에서
+  /// 같은 3단계 줌을 오가게 한다. Ctrl 을 누르지 않은 일반 휠은 여기서 아무것도
+  /// 하지 않는다 — 세로/shift+가로 스크롤은 각 스크롤러의 기존 동작에 맡긴다.
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    final ctrl = HardwareKeyboard.instance.isControlPressed;
+    if (!ctrl) return;
+    // Ctrl+휠 위 = 확대, 아래 = 축소.
+    final down = event.scrollDelta.dy > 0;
+    final next = down
+        ? _zoomOut(widget.metrics.zoom)
+        : _zoomIn(widget.metrics.zoom);
+    if (next == null) return; // 이미 경계면이면 아무것도 안 함.
+    final focal = _localOf(event.position);
+    _requestZoom(next, focal.dx);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final metrics = widget.metrics;
     return LayoutBuilder(
       builder: (context, constraints) {
         final viewHeight = constraints.maxHeight;
         final contentWidth = metrics.totalWidth;
-        return Scrollbar(
-          controller: horizontalController,
-          thumbVisibility: true,
-          child: SingleChildScrollView(
-            controller: horizontalController,
-            scrollDirection: Axis.horizontal,
-            child: SizedBox(
-              width: contentWidth <= 0 ? 1.0 : contentWidth,
-              height: viewHeight,
-              child: Stack(
-                children: [
-                  Column(
-                    children: [
-                      SizedBox(
-                        height: kHeaderHeight,
-                        width: contentWidth,
-                        child: _TimelineHeader(metrics: metrics),
-                      ),
-                      Expanded(
-                        child: ListView.builder(
-                          controller: verticalController,
-                          itemExtent: kRowHeight,
-                          itemCount: rows.length,
-                          padding: EdgeInsets.zero,
-                          itemBuilder: (context, i) => _TimelineRow(
-                            row: rows[i],
-                            tree: tree,
-                            metrics: metrics,
-                            store: store,
-                            selected: rows[i].id == selectedNodeId,
+        // Listener(포인터 직접 추적) 로 타임라인 전체를 감싼다. 아레나에 참여하지
+        // 않으므로 아래 SingleChildScrollView / ListView / bar 의 기존 스크롤·
+        // 드래그 제스처에 전혀 영향을 주지 않는다.
+        return Listener(
+          onPointerDown: _onPointerDown,
+          onPointerMove: _onPointerMove,
+          onPointerUp: _onPointerUp,
+          onPointerCancel: _onPointerCancel,
+          onPointerSignal: _onPointerSignal,
+          child: Scrollbar(
+            controller: widget.horizontalController,
+            thumbVisibility: true,
+            child: SingleChildScrollView(
+              controller: widget.horizontalController,
+              scrollDirection: Axis.horizontal,
+              child: SizedBox(
+                width: contentWidth <= 0 ? 1.0 : contentWidth,
+                height: viewHeight,
+                child: Stack(
+                  children: [
+                    Column(
+                      children: [
+                        SizedBox(
+                          height: kHeaderHeight,
+                          width: contentWidth,
+                          child: _TimelineHeader(metrics: metrics),
+                        ),
+                        Expanded(
+                          child: ListView.builder(
+                            controller: widget.verticalController,
+                            itemExtent: kRowHeight,
+                            itemCount: widget.rows.length,
+                            padding: EdgeInsets.zero,
+                            itemBuilder: (context, i) => _TimelineRow(
+                              row: widget.rows[i],
+                              tree: widget.tree,
+                              metrics: metrics,
+                              store: widget.store,
+                              selected: widget.rows[i].id == widget.selectedNodeId,
+                              today: widget.today,
+                            ),
                           ),
                         ),
-                      ),
-                    ],
-                  ),
-                  // 주말 음영 + 오늘 선은 헤더 아래 본체 영역만 덮도록 위에서부터.
-                  if (metrics.zoom == GanttZoomLevel.day)
-                    Positioned(
-                      left: 0,
-                      top: kHeaderHeight,
-                      right: 0,
-                      bottom: 0,
-                      child: IgnorePointer(
-                        child: _WeekendBackground(metrics: metrics),
-                      ),
+                      ],
                     ),
-                  // 오늘 세로선(전체 높이). 헤더 위까지 연장.
-                  _TodayOverlay(metrics: metrics, today: today),
-                ],
+                    // 주말 음영 + 오늘 선은 헤더 아래 본체 영역만 덮도록 위에서부터.
+                    if (metrics.zoom == GanttZoomLevel.day)
+                      Positioned(
+                        left: 0,
+                        top: kHeaderHeight,
+                        right: 0,
+                        bottom: 0,
+                        child: IgnorePointer(
+                          child: _WeekendBackground(metrics: metrics),
+                        ),
+                      ),
+                    // 오늘 세로선(전체 높이). 헤더 위까지 연장.
+                    _TodayOverlay(metrics: metrics, today: widget.today),
+                  ],
+                ),
               ),
             ),
           ),
         );
       },
     );
+  }
+}
+
+/// 핀치 줌 임계값. 기준 거리 대비 배율이 이 값을 넘으면 한 단계 확대한다.
+/// 1.4 배로 잡는다(요구사항 예시). 축소는 이 값의 역수(1/1.4) 밑으로 내려가야 한다.
+const double kPinchZoomInRatio = 1.4;
+const double kPinchZoomOutRatio = 1.0 / 1.4;
+
+/// [z] 에서 한 단계 더 확대(month → week → day). 이미 day 면 null(변화 없음).
+GanttZoomLevel? _zoomIn(GanttZoomLevel z) {
+  switch (z) {
+    case GanttZoomLevel.month:
+      return GanttZoomLevel.week;
+    case GanttZoomLevel.week:
+      return GanttZoomLevel.day;
+    case GanttZoomLevel.day:
+      return null; // 최대 확대. 더 벌려도 그대로.
+  }
+}
+
+/// [z] 에서 한 단계 더 축소(day → week → month). 이미 month 면 null(변화 없음).
+GanttZoomLevel? _zoomOut(GanttZoomLevel z) {
+  switch (z) {
+    case GanttZoomLevel.day:
+      return GanttZoomLevel.week;
+    case GanttZoomLevel.week:
+      return GanttZoomLevel.month;
+    case GanttZoomLevel.month:
+      return null; // 최대 축소. 더 좁혀도 그대로.
   }
 }
 
@@ -376,12 +587,18 @@ class _TimelineRow extends StatelessWidget {
   final GanttMetrics metrics;
   final PlanStore? store;
   final bool selected;
+
+  /// "오늘". 열린 기간(종료일 미정) 노드의 막대를 "오늘"까지 그리기 위해 쓴다.
+  /// 위젯 안에서 DateTime.now() 로 직접 만들지 않고 [GanttTimeline] 으로부터
+  /// 주입받는다(테스트에서 날짜를 고정할 수 있어야 한다).
+  final PlanDate today;
   const _TimelineRow({
     required this.row,
     required this.tree,
     required this.metrics,
     this.store,
     this.selected = false,
+    required this.today,
   });
 
   @override
@@ -421,6 +638,7 @@ class _TimelineRow extends StatelessWidget {
                 nodeId: node.id,
                 originalStart: node.startDate,
                 originalEnd: node.endDate,
+                barColor: node.barColor,
                 // 마일스톤은 "기간" 이 아니라 "시점" 이므로 리사이즈 개념이 없다
                 // (canResizeDate 는 항상 false — 좌우 핸들 자체를 만들지 않는다).
                 // 좌우 이동(canDragDate)만 허용한다.
@@ -443,6 +661,71 @@ class _TimelineRow extends StatelessWidget {
     // (마일스톤 자기 행은 위쪽 분기에서 이미 처리됐으므로 여기 오지 않는다)
     final descendantMilestones = collectDescendantMilestones(tree, node.id);
 
+    // **열린 기간**(시작일은 있고 종료일이 미정) 인가?
+    // leaf 노드는 startDate 만 있을 때, rollup 요약은 자식들로부터 계산된
+    // endDate 가 없을 때(start 는 있음) 열린 기간으로 본다. 이때 막대를
+    // start~오늘 까지 그린다(단 오늘이 start 이전이면 start 당일 하루치만).
+    // 단, 시작만 미정이고 종료만 있는 경우는 이번 작업 범위가 아니므로 그대로
+    // "날짜 미정" 라벨을 유지한다.
+    final isOpenEnded = effectiveStart != null && effectiveEnd == null;
+
+    Widget barChild;
+    if (effectiveStart != null && effectiveEnd != null) {
+      barChild = _GanttBar(
+        // 막대를 테스트에서 좌표로 집어내기 위한 키. semantics 라벨로 찾으면
+        // 막대 안쪽 제목 Text 의 semantics 가 병합되어 엉뚱한 상위 노드가
+        // 잡히므로(그 노드의 사각형은 행 전체다) 키로 찾는 편이 정확하다.
+        key: ValueKey('gantt-bar-${node.id}'),
+        metrics: metrics,
+        start: effectiveStart,
+        end: effectiveEnd,
+        progress: effectiveProgress,
+        done: isDone,
+        // 요약(rollup) bar 는 기존 2상태(완료/미완료) 유지 — status 는
+        // leaf(또는 autoRollup=false) 노드에서만 4상태로 표시한다.
+        status: isParentSummary ? null : node.status,
+        isSummary: isParentSummary,
+        title: node.title,
+        nodeId: node.id,
+        // 드래그는 노드 원본 기간 기준(rollup 요약은 드래그 대상 아님).
+        // (canDragDate 와 !isSummary 는 store!=null 여부만 다를 뿐 동일한 정책.
+        //  _GanttBar 내부의 _canDrag 가 이미 이 판단을 하므로 그대로 둔다.)
+        draggableStart: node.startDate,
+        draggableEnd: node.endDate,
+        barColor: node.barColor,
+        store: store,
+      );
+    } else if (isOpenEnded) {
+      // 열린 기간 막대: start~오늘 (오늘이 start 이전이면 start 하루치만).
+      // 오른쪽 끝은 사용자가 저장한 값이 아니라 "오늘"이라는 계산값이므로 드래그/
+      // 리사이즈를 막는다(store 를 넘기지 않는다 → 어떤 날짜도 커밋되지 않는다).
+      final openEnd = daysBetween(effectiveStart, today) >= 0
+          ? today
+          : effectiveStart;
+      barChild = _GanttBar(
+        key: ValueKey('gantt-bar-${node.id}'),
+        metrics: metrics,
+        start: effectiveStart,
+        end: openEnd,
+        progress: effectiveProgress,
+        done: isDone,
+        status: isParentSummary ? null : node.status,
+        isSummary: isParentSummary,
+        title: node.title,
+        nodeId: node.id,
+        // 노드 원본 기간(rollup 요약이면 null 일 수 있음)을 그대로 전달하되,
+        // store 를 넘기지 않고 [openEnded]==true 이므로 _canDrag 가 false 가 되어
+        // 어떤 날짜도 커밋되지 않는다(오른쪽 끝은 "오늘"이라는 계산값이므로 드래그 금지).
+        draggableStart: node.startDate,
+        draggableEnd: node.endDate,
+        barColor: node.barColor,
+        openEnded: true,
+        store: null,
+      );
+    } else {
+      barChild = const _NoDateLabel();
+    }
+
     return _rowFrame(
       context,
       overlays: [
@@ -453,27 +736,7 @@ class _TimelineRow extends StatelessWidget {
             info: m,
           ),
       ],
-      child: (effectiveStart != null && effectiveEnd != null)
-          ? _GanttBar(
-              metrics: metrics,
-              start: effectiveStart,
-              end: effectiveEnd,
-              progress: effectiveProgress,
-              done: isDone,
-              // 요약(rollup) bar 는 기존 2상태(완료/미완료) 유지 — status 는
-              // leaf(또는 autoRollup=false) 노드에서만 4상태로 표시한다.
-              status: isParentSummary ? null : node.status,
-              isSummary: isParentSummary,
-              title: node.title,
-              nodeId: node.id,
-              // 드래그는 노드 원본 기간 기준(rollup 요약은 드래그 대상 아님).
-              // (canDragDate 와 !isSummary 는 store!=null 여부만 다를 뿐 동일한 정책.
-              //  _GanttBar 내부의 _canDrag 가 이미 이 판단을 하므로 그대로 둔다.)
-              draggableStart: node.startDate,
-              draggableEnd: node.endDate,
-              store: store,
-            )
-          : const _NoDateLabel(),
+      child: barChild,
     );
   }
 
@@ -540,6 +803,10 @@ class _MilestoneMarker extends StatefulWidget {
   final PlanDate? originalStart;
   final PlanDate? originalEnd;
 
+  /// 사용자가 고른 막대 색. [BarColor.none] 이면 기존 [statusAccentColor] 를 그대로
+  /// 쓴다. 마일스톤 마커에도 일반 막대와 같은 색 규칙을 적용한다.
+  final BarColor barColor;
+
   /// 드래그(이동) 허용 여부. rollup 요약 행이면 false(상위 [_TimelineRow] 판단).
   final bool canDrag;
 
@@ -555,6 +822,7 @@ class _MilestoneMarker extends StatefulWidget {
     required this.originalStart,
     required this.originalEnd,
     required this.canDrag,
+    this.barColor = BarColor.none,
     this.store,
   });
 
@@ -614,7 +882,13 @@ class _MilestoneMarkerState extends State<_MilestoneMarker> {
     final date = _displayDate;
     // 마커는 "그 날짜 칸"의 가운데에 오도록 dayWidth 절반만큼 보정한다.
     final centerX = widget.metrics.xForDate(date) + widget.metrics.dayWidth / 2;
-    final color = statusAccentColor(context, widget.status);
+    // 일반 막대와 같은 우선순위 규칙: 완료면 사용자 색 무시. 그 외 barColor 가 있으면
+    // 사용자 색, 없으면 기존 status 색([statusAccentColor]).
+    final isDone = widget.status == TaskStatus.done;
+    final color = isDone
+        ? barFillColor(context, done: true)
+        : (barColorOf(context, widget.barColor) ??
+            statusAccentColor(context, widget.status));
     final scheme = Theme.of(context).colorScheme;
 
     return Positioned(
@@ -749,13 +1023,31 @@ class _GanttBar extends StatefulWidget {
   final String title;
   final String nodeId;
 
+  /// 사용자가 고른 막대 색. [BarColor.none] 이면 기존 status/done 색 로직을 그대로
+  /// 쓴다. 단 **완료(done)==true 면 사용자 색을 무시**하고 완료 색을 쓴다 —
+  /// 쨍한 사용자 색이 남으면 완료 여부를 한눈에 알 수 없기 때문이다(아래 build 의
+  /// 채움색 결정 참고).
+  final BarColor barColor;
+
   /// 드래그 기준이 되는 노드 **원본** 기간(rollup 요약이면 null 일 수 있음).
   final PlanDate? draggableStart;
   final PlanDate? draggableEnd;
 
+  /// **열린 기간**(종료일 미정) 막대인지.
+  ///
+  /// true 면 오른쪽 끝이 사용자가 저장한 종료일이 아니라 "오늘"이라는 계산값이므로,
+  /// - 오른쪽 끝이 확정된 종료일이 아님을 시각적으로 드러내기 위해 알파 그라데이션
+  ///   (오른쪽으로 갈수록 투명)을 입힌다.
+  /// - 드래그/리사이즈를 아예 비활성화한다(끝을 끌면 사용자가 입력한 적 없는
+  ///   endDate 가 조용히 저장되어 버린다). [store] 가 null 로 넘어오는 것과
+  ///   [_canDrag] 가 false 인 것으로 이중 보장한다.
+  /// - Semantics 라벨에 [kOpenEndedSemantics] 문구를 포함한다.
+  final bool openEnded;
+
   final PlanStore? store;
 
   const _GanttBar({
+    super.key,
     required this.metrics,
     required this.start,
     required this.end,
@@ -767,6 +1059,8 @@ class _GanttBar extends StatefulWidget {
     required this.nodeId,
     required this.draggableStart,
     required this.draggableEnd,
+    this.barColor = BarColor.none,
+    this.openEnded = false,
     this.store,
   });
 
@@ -806,6 +1100,7 @@ class _GanttBarState extends State<_GanttBar> {
   bool get _canDrag =>
       widget.store != null &&
       !widget.isSummary && // rollup 요약 바는 드래그 제외
+      !widget.openEnded && // 열린 기간(오늘로 계산된 끝) 은 드래그/리사이즈 제외
       widget.draggableStart != null &&
       widget.draggableEnd != null;
 
@@ -930,7 +1225,9 @@ class _GanttBarState extends State<_GanttBar> {
       width: width <= 0 ? 1.0 : width,
       height: barH,
       child: Semantics(
-        label: widget.done
+        label: widget.openEnded
+            ? '${widget.title} ($kOpenEndedSemantics)'
+            : widget.done
             ? '${widget.title} ($kDoneSemantics)'
             : widget.status == TaskStatus.onHold
             ? '${widget.title} ($kOnHoldSemantics)'
@@ -978,24 +1275,41 @@ class _GanttBarState extends State<_GanttBar> {
                       borderRadius: BorderRadius.circular(kBarRadius),
                       child: Stack(
                         children: [
-                          // 트랙(미충족).
-                          Container(color: barTrackColor(context)),
+                          // 트랙(미충족). 사용자가 색을 지정했으면 그 색의 옅은 버전,
+                          // 아니면 기존 [barTrackColor].
+                          Container(
+                            color: customBarTrackColor(context, widget.barColor) ??
+                                barTrackColor(context),
+                          ),
                           // 진행 영역.
+                          //
+                          // 색 우선순위:
+                          // 1. 완료(done)==true 면 **사용자 색을 무시**하고 기존 완료
+                          //    색(barFillColor(done:true))을 쓴다. 쨍한 사용자 색으로
+                          //    남으면 완료 여부를 한눈에 알 수 없기 때문이다.
+                          // 2. barColor != none 이면 사용자가 고른 색([barColorOf]).
+                          // 3. 그 외는 기존 로직(status 색 / done 색) 을 그대로.
+                          //
+                          // done 판단을 맨 앞에 둬 barColor 와 관계없이 항상 완료 색이
+                          // 이긴다(핵심 정책).
                           Positioned.fill(
                             child: FractionallySizedBox(
                               alignment: Alignment.centerLeft,
                               widthFactor: clampedP,
                               child: Container(
                                 decoration: BoxDecoration(
-                                  color: widget.status != null
-                                      ? statusBarFillColor(
-                                          context,
-                                          widget.status!,
-                                        )
-                                      : barFillColor(
-                                          context,
-                                          done: widget.done,
-                                        ),
+                                  color: widget.done
+                                      ? barFillColor(context, done: true)
+                                      : (barColorOf(context, widget.barColor) ??
+                                          (widget.status != null
+                                              ? statusBarFillColor(
+                                                  context,
+                                                  widget.status!,
+                                                )
+                                              : barFillColor(
+                                                  context,
+                                                  done: widget.done,
+                                                ))),
                                   border: widget.isSummary
                                       ? Border.all(
                                           color: scheme.primary.withValues(
@@ -1038,14 +1352,21 @@ class _GanttBarState extends State<_GanttBar> {
                                           overflow: TextOverflow.ellipsis,
                                           style: TextStyle(
                                             fontSize: 11,
+                                            // 사용자 지정 색 위에서도 글자가
+                                            // 읽히도록: barColor 가 있으면 배경
+                                            // 밝기 기준 검정/흰색, 아니면 기존 로직.
                                             color: widget.done
                                                 ? scheme.onSurface.withValues(
                                                     alpha: 0.45,
                                                   )
-                                                : (widget.status ==
-                                                          TaskStatus.onHold
-                                                      ? scheme.onSurface
-                                                      : scheme.onPrimary),
+                                                : (onCustomBarTextColor(
+                                                          context,
+                                                          widget.barColor,
+                                                        ) ??
+                                                    (widget.status ==
+                                                            TaskStatus.onHold
+                                                        ? scheme.onSurface
+                                                        : scheme.onPrimary)),
                                             decoration: widget.done
                                                 ? TextDecoration.lineThrough
                                                 : null,
@@ -1063,6 +1384,33 @@ class _GanttBarState extends State<_GanttBar> {
                         ],
                       ),
                     ),
+                    // 열린 기간(종료일 미정) 표시: 오른쪽 끝은 확정된 종료일이
+                    // 아니라 "오늘"이라는 계산값임을 한눈에 보여주기 위해 오른쪽
+                    // 가장자리를 향해 투명도를 낮추는 그라데이션을 막대 전체
+                    // (트랙+진행+라벨) 위에 겹쳐 입힌다. 새 색을 만들지 않고 막대의
+                    // 배경(트랙) 색으로 페이드 인시켜 오른쪽이 녹아 들어가듯 보이게
+                    // 한다. 막대가 충분히 넓을 때만(좁으면 그라데이션이 의미 없으므로)
+                    // 적용한다. [IgnorePointer] 로 감싸 이 오버레이가 드래그/히트를
+                    // 가로채지 않도록 한다(드래그 자체는 어차피 비활성).
+                    if (widget.openEnded && width >= 12)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.centerLeft,
+                                end: Alignment.centerRight,
+                                stops: const [0.55, 1.0],
+                                colors: [
+                                  Colors.transparent,
+                                  customBarTrackColor(context, widget.barColor) ??
+                                      barTrackColor(context),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
                     // 리사이즈 핸들 시각 표식(호버 힌트). 드래그 중이면 생략.
                     if (_canDrag && !isDragging && width >= _handleWidth * 2)
                       Positioned(
