@@ -29,7 +29,13 @@ enum GanttZoomLevel {
   week(18.0, '주'),
 
   /// 월 단위. 하루 = 5px (1달 ≈ 150px).
-  month(5.0, '월');
+  month(5.0, '월'),
+
+  /// 분기 단위. 하루 = 1.8px (1분기 ≈ 164px). 폰 화면에 1년 반 정도가 들어온다.
+  quarter(1.8, '분기'),
+
+  /// 연 단위. 하루 = 0.6px (1년 ≈ 219px). 여러 해에 걸친 계획을 한눈에 본다.
+  year(0.6, '년');
 
   /// 줌 레벨에서의 하루 픽셀 폭.
   final double dayWidth;
@@ -240,6 +246,10 @@ List<GanttHeaderCell> buildHeaderCells(GanttMetrics m) {
       return _weekCells(m);
     case GanttZoomLevel.month:
       return _monthCells(m);
+    case GanttZoomLevel.quarter:
+      return _quarterCells(m);
+    case GanttZoomLevel.year:
+      return _yearCells(m);
   }
 }
 
@@ -326,6 +336,55 @@ List<GanttHeaderCell> _monthCells(GanttMetrics m) {
     cursor = cursor.month == 12
         ? PlanDate(cursor.year + 1, 1, 1)
         : PlanDate(cursor.year, cursor.month + 1, 1);
+  }
+  return out;
+}
+
+/// 분기(1/4/7/10월 1일 시작) 단위 셀. 라벨은 "2026 Q3" 형태.
+List<GanttHeaderCell> _quarterCells(GanttMetrics m) {
+  final out = <GanttHeaderCell>[];
+  // 표시 범위 첫 날이 속한 분기의 첫 달(1/4/7/10)부터 시작한다.
+  final firstQuarterMonth = ((m.firstDay.month - 1) ~/ 3) * 3 + 1;
+  var cursor = PlanDate(m.firstDay.year, firstQuarterMonth, 1);
+  while (daysBetween(cursor, m.lastDay) >= 0) {
+    // 이 분기의 마지막 달의 말일.
+    final lastMonthOfQuarter = cursor.month + 2;
+    final quarterEnd = endOfMonth(PlanDate(cursor.year, lastMonthOfQuarter, 1));
+    final days = inclusiveDayCount(cursor, quarterEnd);
+    out.add(GanttHeaderCell(
+      date: cursor,
+      dayCount: days,
+      x: m.xForDate(cursor),
+      width: days * m.dayWidth,
+      label: '${cursor.year} Q${(cursor.month - 1) ~/ 3 + 1}',
+      emphasize: true,
+      isWeekend: false,
+    ));
+    // 다음 분기 첫 달.
+    cursor = cursor.month >= 10
+        ? PlanDate(cursor.year + 1, 1, 1)
+        : PlanDate(cursor.year, cursor.month + 3, 1);
+  }
+  return out;
+}
+
+/// 연 단위 셀. 라벨은 "2026".
+List<GanttHeaderCell> _yearCells(GanttMetrics m) {
+  final out = <GanttHeaderCell>[];
+  var cursor = PlanDate(m.firstDay.year, 1, 1);
+  while (daysBetween(cursor, m.lastDay) >= 0) {
+    final yearEnd = PlanDate(cursor.year, 12, 31);
+    final days = inclusiveDayCount(cursor, yearEnd);
+    out.add(GanttHeaderCell(
+      date: cursor,
+      dayCount: days,
+      x: m.xForDate(cursor),
+      width: days * m.dayWidth,
+      label: '${cursor.year}',
+      emphasize: true,
+      isWeekend: false,
+    ));
+    cursor = PlanDate(cursor.year + 1, 1, 1);
   }
   return out;
 }

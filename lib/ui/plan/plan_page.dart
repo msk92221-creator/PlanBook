@@ -565,15 +565,44 @@ class _ZoomSelector extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // 줌 단계가 5개(일/주/월/분기/년)로 늘면서 폰 화면에서는 버튼을 다 늘어놓을
+    // 폭이 안 나온다(앱바에 아이콘 버튼도 5개 있다). 좁은 화면에서는 현재 단계만
+    // 보여주는 드롭다운으로 접고, 넓은 화면에서만 버튼을 전부 펼친다.
+    final isWide = MediaQuery.sizeOf(context).width >= kTwoPaneBreakpoint;
+    if (!isWide) {
+      return PopupMenuButton<GanttZoomLevel>(
+        tooltip: '확대/축소 단계',
+        initialValue: value,
+        onSelected: onChanged,
+        itemBuilder: (context) => [
+          for (final z in GanttZoomLevel.values)
+            PopupMenuItem(value: z, child: Text(z.label)),
+        ],
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(value.label),
+              const Icon(Icons.arrow_drop_down, size: 20),
+            ],
+          ),
+        ),
+      );
+    }
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8),
       child: ToggleButtons(
         isSelected: GanttZoomLevel.values.map((z) => z == value).toList(),
         onPressed: (i) => onChanged(GanttZoomLevel.values[i]),
-        constraints: const BoxConstraints(minHeight: 36, minWidth: 44),
+        constraints: const BoxConstraints(minHeight: 36, minWidth: 40),
         borderRadius: BorderRadius.circular(8),
         children: [
-          for (final z in GanttZoomLevel.values) Text(z.label),
+          for (final z in GanttZoomLevel.values)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Text(z.label),
+            ),
         ],
       ),
     );
