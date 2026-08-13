@@ -178,13 +178,22 @@ class _GanttTimelineState extends State<GanttTimeline> {
   }
 
   void _onPointerMove(PointerMoveEvent event) {
-    if (!_pointers.containsKey(event.pointer)) return;
+    // **down 을 놓쳤어도 move 로 등록한다.** 실기기에서는 두 번째 손가락의
+    // PointerDownEvent 가 이 Listener 까지 오지 않는 경우가 있는데(스크롤뷰가
+    // 포인터를 가져가거나 취소 이벤트가 끼는 등), 예전처럼 containsKey 로 걸러
+    // 버리면 그 손가락은 영원히 추적되지 않아 핀치가 성립하지 못한다.
+    // Flutter 는 down 시점 hit-test 경로에만 move 를 보내므로, 여기서 등록해도
+    // 타임라인 밖에서 시작한 포인터가 섞일 일은 없다.
     _pointers[event.pointer] = _localOf(event.position);
     if (kPinchDebugOverlay) {
       _dbgMove++;
       _dbgMaxPointers = math.max(_dbgMaxPointers, _pointers.length);
     }
-    if (_pointers.length >= 2) _evaluatePinch();
+    if (_pointers.length >= 2) {
+      // 기준 거리가 없으면(취소로 날아갔거나 down 을 놓쳤을 때) 지금 다시 잡는다.
+      _pinchBaseDistance ??= _currentPairDistance();
+      _evaluatePinch();
+    }
     if (kPinchDebugOverlay) setState(() {});
   }
 
@@ -384,8 +393,11 @@ class _GanttTimelineState extends State<GanttTimeline> {
 
 /// 핀치 줌 임계값. 기준 거리 대비 배율이 이 값을 넘으면 한 단계 확대한다.
 /// 1.4 배로 잡는다(요구사항 예시). 축소는 이 값의 역수(1/1.4) 밑으로 내려가야 한다.
-const double kPinchZoomInRatio = 1.4;
-const double kPinchZoomOutRatio = 1.0 / 1.4;
+/// 1.4 배는 폰에서 너무 빡빡하다 — 손가락을 이미 벌린 채로 시작하면 화면 폭
+/// 때문에 물리적으로 1.4 배까지 못 벌린다(예: 400px 화면에서 200px 로 시작하면
+/// 280px 까지 벌려야 하는데 여유가 거의 없다). 1.18 배로 낮춘다.
+const double kPinchZoomInRatio = 1.18;
+const double kPinchZoomOutRatio = 1.0 / 1.18;
 
 /// [z] 에서 한 단계 더 확대(month → week → day). 이미 day 면 null(변화 없음).
 GanttZoomLevel? _zoomIn(GanttZoomLevel z) {
