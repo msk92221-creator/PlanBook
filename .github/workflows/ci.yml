@@ -1,0 +1,27 @@
+# main 이 아닌 브랜치에 푸시할 때마다 analyze/test 를 돌린다.
+# release.yml 의 test 잡은 태그를 밀 때만 도는데, 그러면 릴리스를 내기 전에는
+# 검증할 방법이 없다. 기능 브랜치에서 미리 깨진 걸 잡으려고 분리해 둔다.
+name: CI
+
+on:
+  push:
+    branches-ignore:
+      - main
+  workflow_dispatch:
+
+env:
+  # release.yml 과 같은 버전을 써야 CI 통과 = 릴리스 통과가 된다.
+  FLUTTER_VERSION: '3.44.9'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
