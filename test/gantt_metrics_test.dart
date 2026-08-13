@@ -18,6 +18,7 @@ GanttMetrics _metrics({
 }
 
 void main() {
+  _zoomOutLevelsTests();
   group('xForDate / dateForX round-trip', () {
     test('여러 줌 레벨에서 왕복 일치', () {
       for (final zoom in GanttZoomLevel.values) {
@@ -399,6 +400,60 @@ void main() {
         zoom: GanttZoomLevel.week,
       );
       expect(weekendDayOffsets(m), isEmpty);
+    });
+  });
+}
+
+void _zoomOutLevelsTests() {
+  group('축소 단계(분기/년) 헤더 셀', () {
+    test('분기 단위는 1/4/7/10월 1일마다 셀을 만들고 "YYYY Qn" 으로 라벨링한다', () {
+      final m = GanttMetrics(
+        firstDay: PlanDate(2026, 2, 15),
+        lastDay: PlanDate(2026, 11, 20),
+        dayWidth: GanttZoomLevel.quarter.dayWidth,
+        zoom: GanttZoomLevel.quarter,
+      );
+      final cells = buildHeaderCells(m);
+      // 2/15 가 속한 분기(Q1=1/1)부터 11/20 이 속한 분기(Q4=10/1)까지 4개.
+      expect(cells.map((c) => c.label).toList(),
+          ['2026 Q1', '2026 Q2', '2026 Q3', '2026 Q4']);
+      // 각 셀의 시작일은 분기 첫 달 1일.
+      expect(cells.map((c) => c.date.month).toList(), [1, 4, 7, 10]);
+      // Q1(1~3월) = 31+28+31 = 90일 (2026 은 평년).
+      expect(cells.first.dayCount, 90);
+    });
+
+    test('년 단위는 1월 1일마다 셀을 만들고 연도로 라벨링한다', () {
+      final m = GanttMetrics(
+        firstDay: PlanDate(2026, 6, 1),
+        lastDay: PlanDate(2028, 3, 1),
+        dayWidth: GanttZoomLevel.year.dayWidth,
+        zoom: GanttZoomLevel.year,
+      );
+      final cells = buildHeaderCells(m);
+      expect(cells.map((c) => c.label).toList(), ['2026', '2027', '2028']);
+      expect(cells[0].dayCount, 365);
+      expect(cells[1].dayCount, 365);
+      // 2028 은 윤년.
+      expect(cells[2].dayCount, 366);
+    });
+
+    test('축소할수록 하루 폭이 좁아진다(일 > 주 > 월 > 분기 > 년)', () {
+      final widths =
+          GanttZoomLevel.values.map((z) => z.dayWidth).toList();
+      for (var i = 1; i < widths.length; i++) {
+        expect(widths[i], lessThan(widths[i - 1]),
+            reason: '${GanttZoomLevel.values[i].label} 는 앞 단계보다 좁아야 한다');
+      }
+    });
+
+    test('년 단위에서는 폰 화면(400px) 에 최소 1년 이상이 들어온다', () {
+      // 축소를 더 하고 싶다는 요구의 핵심 — 한 화면에 담기는 기간이 실제로 늘어야 한다.
+      const viewWidth = 400.0;
+      final daysVisible = viewWidth ~/ GanttZoomLevel.year.dayWidth;
+      expect(daysVisible, greaterThan(365));
+      // 월 단위(5px/일) 에서는 80일 남짓밖에 안 보였다.
+      expect(viewWidth ~/ GanttZoomLevel.month.dayWidth, lessThan(100));
     });
   });
 }

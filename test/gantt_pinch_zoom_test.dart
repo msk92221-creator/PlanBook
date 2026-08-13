@@ -203,7 +203,7 @@ void main() {
           reason: '핀치 인(좁히기) 은 축소 방향으로 한 단계 이동해야 한다');
     });
 
-    testWidgets('month(최대 축소) 에서 더 좁혀도 그대로 month 다', (tester) async {
+    testWidgets('year(최대 축소) 에서 더 좁혀도 그대로 year 다', (tester) async {
       final store = await _emptyStore();
       final ctrl = ScrollController();
       addTearDown(ctrl.dispose);
@@ -211,10 +211,10 @@ void main() {
         tester,
         store: store,
         horizontalController: ctrl,
-        initialZoom: GanttZoomLevel.month,
+        initialZoom: GanttZoomLevel.year,
       );
 
-      // 아무리 세게 좁혀도(거리 100 → 10) month 아래 단계는 없다.
+      // 아무리 세게 좁혀도(거리 100 → 10) year 아래 단계는 없다.
       await _pinch(
         tester,
         centerX: 300,
@@ -223,7 +223,7 @@ void main() {
         delta2: const Offset(-45, 0),
       );
 
-      expect(state._zoom, GanttZoomLevel.month, reason: '최대 축소 단계에서 더 축소 불가');
+      expect(state._zoom, GanttZoomLevel.year, reason: '최대 축소 단계에서 더 축소 불가');
     });
 
     testWidgets('day(최대 확대) 에서 더 벌려도 그대로 day 다', (tester) async {
