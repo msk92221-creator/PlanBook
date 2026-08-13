@@ -14,6 +14,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../core/date/plan_date.dart';
 import '../../data/plan_store.dart';
@@ -34,7 +35,10 @@ const String kOpenEndedSemantics = '종료일 미정';
 ///
 /// [verticalController] 는 좌측 트리 패널과 동기화되는 세로 스크롤 컨트롤러(외부 주입).
 /// [horizontalController] 는 가로 스크롤 컨트롤러(초기 "오늘" 위치 보정에도 사용).
-class GanttTimeline extends StatelessWidget {
+///
+/// **두 손가락(핀치) 확대/축소** 가 추가됐다. [StatefulWidget] 인 이유는 핀치 판정을
+/// 위해 현재 눌려 있는 포인터들을 직접 추적해야 하기 때문이다.
+class GanttTimeline extends StatefulWidget {
   final PlanTree tree;
   final List<FlatRow> rows;
   final GanttMetrics metrics;
@@ -52,6 +56,11 @@ class GanttTimeline extends StatelessWidget {
   /// 현재 강조(선택) 표시할 노드 id(Today/Calendar/검색에서 넘어올 때 등).
   final String? selectedNodeId;
 
+  /// **핀치 / Ctrl+휠 로 줌 단계가 바뀌었을 때** 호출. [PlanPage] 가 줌 상태를
+  /// 소유하고 있으므로, 여기서는 새 줌을 알려주기만 한다(상태를 직접 바꾸지 않는다).
+  /// null 이면(단독 테스트 등) 핀치/휠 줌이 비활성이다.
+  final ValueChanged<GanttZoomLevel>? onZoomChange;
+
   const GanttTimeline({
     super.key,
     required this.tree,
@@ -62,70 +71,265 @@ class GanttTimeline extends StatelessWidget {
     this.horizontalController,
     this.store,
     this.selectedNodeId,
+    this.onZoomChange,
   });
 
   @override
+  State<GanttTimeline> createState() => _GanttTimelineState();
+}
+
+class _GanttTimelineState extends State<GanttTimeline> {
+  // ----- 핀치 줌 상태 -----
+  // **왜 GestureDetector(onScaleUpdate) 가 아니라 Listener 로 포인터를 직접 세는가**:
+  // ScaleGestureRecognizer 는 손가락 1개일 때도 제스처 아레나에 참여해서, 가로/세로
+  // 스크롤과 bar 드래그(날짜를 실제로 바꾸는 기능) 를 이겨버린다. 그러면 스크롤이
+  // 안 되거나 막대를 못 옮기게 된다. Listener 는 아레나에 참여하지 않으므로 기존
+  // 포인터 동작(스크롤/드래그) 이 100% 그대로 살아 있다. 핀치는 "포인터가 2개 이상"
+  // 일 때만 판정하므로 1개 손가락 동작은 전혀 간섭하지 않는다.
+  // → 절대 무심코 GestureDetector(onScale*) 로 바꾸지 말 것. 스크롤이 죽는다.
+
+  /// 현재 눌려 있는 포인터(id → 최근 뷰 로컬 위치). 1개 = 일반 드래그/스크롤,
+  /// 2개 이상 = 핀치 후보.
+  final Map<int, Offset> _pointers = {};
+
+  /// 핀치 "기준 거리". 두 번째 손가락이 닿은 순간(또는 한 단계 줌이 바뀐 직후) 의
+  /// 두 포인터 사이 거리. 여기서부터 배율을 재서 임계값을 넘으면 한 단계씩 바꾼다.
+  double? _pinchBaseDistance;
+
+  /// 줌이 바뀐 뒤 적용할 가로 스크롤 오프셋 보정 정보.
+  /// (핀치/휠 중심의 날짜, 그 중심의 뷰 로컬 x).
+  /// 줌 변경 → [PlanPage] 가 metrics 를 새로 계산해 rebuild → [didUpdateWidget] 에서
+  /// 새 metrics 기준으로 보정을 적용한다(동기적으론 새 metrics 가 아직 없다).
+  ({PlanDate focalDate, double focalLocalX})? _pendingScroll;
+  GanttZoomLevel? _pendingFromZoom;
+
+  ScrollController? get _hCtrl => widget.horizontalController;
+
+  @override
+  void didUpdateWidget(covariant GanttTimeline oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 줌이 실제로 바뀌어 새 metrics 가 들어왔으면, 보류 중이던 스크롤 보정을 적용한다.
+    final pending = _pendingScroll;
+    if (pending != null &&
+        _pendingFromZoom != null &&
+        widget.metrics.zoom != _pendingFromZoom) {
+      _pendingScroll = null;
+      _pendingFromZoom = null;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        _applyScrollCorrection(pending.focalDate, pending.focalLocalX);
+      });
+    }
+  }
+
+  /// 뷰 로컬 좌표를 구하기 위한 렌더 박스(없으면 null).
+  RenderBox? get _box => context.findRenderObject() as RenderBox?;
+
+  Offset _localOf(Offset global) {
+    final box = _box;
+    return box != null ? box.globalToLocal(global) : Offset.zero;
+  }
+
+  /// 두 점 사이 거리.
+  double _distance(Offset a, Offset b) => (a - b).distance;
+
+  /// 현재 두 개 포인터 사이 거리(2개 이상이면 처음 2개 기준).
+  double? _currentPairDistance() {
+    if (_pointers.length < 2) return null;
+    final iter = _pointers.values.take(2).toList();
+    return _distance(iter[0], iter[1]);
+  }
+
+  /// 핀치 중심(두 손가락의 가운데) 의 뷰 로컬 좌표.
+  Offset _pinchFocalLocal() {
+    final iter = _pointers.values.take(2).toList();
+    return (iter[0] + iter[1]) / 2;
+  }
+
+  void _onPointerDown(PointerDownEvent event) {
+    _pointers[event.pointer] = _localOf(event.position);
+    // 두 번째 손가락이 닿으면 핀치 기준 거리를 잡는다.
+    if (_pointers.length == 2) {
+      _pinchBaseDistance = _currentPairDistance();
+    }
+  }
+
+  void _onPointerMove(PointerMoveEvent event) {
+    if (!_pointers.containsKey(event.pointer)) return;
+    _pointers[event.pointer] = _localOf(event.position);
+    if (_pointers.length >= 2) _evaluatePinch();
+  }
+
+  void _onPointerUp(PointerUpEvent event) {
+    _pointers.remove(event.pointer);
+    if (_pointers.length < 2) _pinchBaseDistance = null;
+  }
+
+  void _onPointerCancel(PointerCancelEvent event) {
+    _pointers.remove(event.pointer);
+    if (_pointers.length < 2) _pinchBaseDistance = null;
+  }
+
+  /// 현재 두 손가락 거리의 배율을 기준 거리와 비교해 한 단계 줌을 바꾼다.
+  void _evaluatePinch() {
+    final base = _pinchBaseDistance;
+    final cur = _currentPairDistance();
+    if (base == null || cur == null || base <= 0) return;
+
+    final ratio = cur / base;
+    GanttZoomLevel? next;
+    if (ratio >= kPinchZoomInRatio) {
+      next = _zoomIn(widget.metrics.zoom);
+    } else if (ratio <= kPinchZoomOutRatio) {
+      next = _zoomOut(widget.metrics.zoom);
+    }
+    if (next == null) return; // 경계 밖이거나 임계값 미달 → 아무것도 안 함.
+
+    // 한 단계 바뀌었으니 기준 거리를 현재 거리로 리셋. 이래야 한 번의 핀치 동작이
+    // 여러 단계를 순식간에 건너뛰지 않는다(손가락을 더 벌려야 다음 단계로 간다).
+    _pinchBaseDistance = cur;
+    final focal = _pinchFocalLocal();
+    _requestZoom(next, focal.dx);
+  }
+
+  /// [newZoom] 으로 줌을 바꾸도록 [PlanPage] 에 알리고, 줌 후 스크롤 보정을 예약.
+  void _requestZoom(GanttZoomLevel newZoom, double focalLocalX) {
+    if (widget.onZoomChange == null) return; // 단독 테스트 등: 줌 변경 불가.
+    final offset = (_hCtrl?.hasClients ?? false) ? _hCtrl!.offset : 0.0;
+    // 핀치/휠 중심이 가리키는 날짜(현재 metrics + 현재 스크롤 오프셋 기준).
+    final focalDate = widget.metrics.dayColumnForX(offset + focalLocalX);
+    _pendingScroll = (focalDate: focalDate, focalLocalX: focalLocalX);
+    _pendingFromZoom = widget.metrics.zoom;
+    widget.onZoomChange!(newZoom);
+  }
+
+  /// 줌 변경 후 새 metrics 로, 보고 있던 날짜가 같은 화면 위치에 오도록 보정.
+  void _applyScrollCorrection(PlanDate focalDate, double focalLocalX) {
+    final ctrl = _hCtrl;
+    if (ctrl == null || !ctrl.hasClients) return;
+    final newX = widget.metrics.xForDate(focalDate) - focalLocalX;
+    ctrl.jumpTo(newX.clamp(0.0, ctrl.position.maxScrollExtent));
+  }
+
+  /// 데스크톱(Windows 등) 에서 **Ctrl + 마우스 휠** 로 줌. 핀치가 없는 환경에서
+  /// 같은 3단계 줌을 오가게 한다. Ctrl 을 누르지 않은 일반 휠은 여기서 아무것도
+  /// 하지 않는다 — 세로/shift+가로 스크롤은 각 스크롤러의 기존 동작에 맡긴다.
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    final ctrl = HardwareKeyboard.instance.isControlPressed;
+    if (!ctrl) return;
+    // Ctrl+휠 위 = 확대, 아래 = 축소.
+    final down = event.scrollDelta.dy > 0;
+    final next = down
+        ? _zoomOut(widget.metrics.zoom)
+        : _zoomIn(widget.metrics.zoom);
+    if (next == null) return; // 이미 경계면이면 아무것도 안 함.
+    final focal = _localOf(event.position);
+    _requestZoom(next, focal.dx);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final metrics = widget.metrics;
     return LayoutBuilder(
       builder: (context, constraints) {
         final viewHeight = constraints.maxHeight;
         final contentWidth = metrics.totalWidth;
-        return Scrollbar(
-          controller: horizontalController,
-          thumbVisibility: true,
-          child: SingleChildScrollView(
-            controller: horizontalController,
-            scrollDirection: Axis.horizontal,
-            child: SizedBox(
-              width: contentWidth <= 0 ? 1.0 : contentWidth,
-              height: viewHeight,
-              child: Stack(
-                children: [
-                  Column(
-                    children: [
-                      SizedBox(
-                        height: kHeaderHeight,
-                        width: contentWidth,
-                        child: _TimelineHeader(metrics: metrics),
-                      ),
-                      Expanded(
-                        child: ListView.builder(
-                          controller: verticalController,
-                          itemExtent: kRowHeight,
-                          itemCount: rows.length,
-                          padding: EdgeInsets.zero,
-                          itemBuilder: (context, i) => _TimelineRow(
-                            row: rows[i],
-                            tree: tree,
-                            metrics: metrics,
-                            store: store,
-                            selected: rows[i].id == selectedNodeId,
-                            today: today,
+        // Listener(포인터 직접 추적) 로 타임라인 전체를 감싼다. 아레나에 참여하지
+        // 않으므로 아래 SingleChildScrollView / ListView / bar 의 기존 스크롤·
+        // 드래그 제스처에 전혀 영향을 주지 않는다.
+        return Listener(
+          onPointerDown: _onPointerDown,
+          onPointerMove: _onPointerMove,
+          onPointerUp: _onPointerUp,
+          onPointerCancel: _onPointerCancel,
+          onPointerSignal: _onPointerSignal,
+          child: Scrollbar(
+            controller: widget.horizontalController,
+            thumbVisibility: true,
+            child: SingleChildScrollView(
+              controller: widget.horizontalController,
+              scrollDirection: Axis.horizontal,
+              child: SizedBox(
+                width: contentWidth <= 0 ? 1.0 : contentWidth,
+                height: viewHeight,
+                child: Stack(
+                  children: [
+                    Column(
+                      children: [
+                        SizedBox(
+                          height: kHeaderHeight,
+                          width: contentWidth,
+                          child: _TimelineHeader(metrics: metrics),
+                        ),
+                        Expanded(
+                          child: ListView.builder(
+                            controller: widget.verticalController,
+                            itemExtent: kRowHeight,
+                            itemCount: widget.rows.length,
+                            padding: EdgeInsets.zero,
+                            itemBuilder: (context, i) => _TimelineRow(
+                              row: widget.rows[i],
+                              tree: widget.tree,
+                              metrics: metrics,
+                              store: widget.store,
+                              selected: widget.rows[i].id == widget.selectedNodeId,
+                              today: widget.today,
+                            ),
                           ),
                         ),
-                      ),
-                    ],
-                  ),
-                  // 주말 음영 + 오늘 선은 헤더 아래 본체 영역만 덮도록 위에서부터.
-                  if (metrics.zoom == GanttZoomLevel.day)
-                    Positioned(
-                      left: 0,
-                      top: kHeaderHeight,
-                      right: 0,
-                      bottom: 0,
-                      child: IgnorePointer(
-                        child: _WeekendBackground(metrics: metrics),
-                      ),
+                      ],
                     ),
-                  // 오늘 세로선(전체 높이). 헤더 위까지 연장.
-                  _TodayOverlay(metrics: metrics, today: today),
-                ],
+                    // 주말 음영 + 오늘 선은 헤더 아래 본체 영역만 덮도록 위에서부터.
+                    if (metrics.zoom == GanttZoomLevel.day)
+                      Positioned(
+                        left: 0,
+                        top: kHeaderHeight,
+                        right: 0,
+                        bottom: 0,
+                        child: IgnorePointer(
+                          child: _WeekendBackground(metrics: metrics),
+                        ),
+                      ),
+                    // 오늘 세로선(전체 높이). 헤더 위까지 연장.
+                    _TodayOverlay(metrics: metrics, today: widget.today),
+                  ],
+                ),
               ),
             ),
           ),
         );
       },
     );
+  }
+}
+
+/// 핀치 줌 임계값. 기준 거리 대비 배율이 이 값을 넘으면 한 단계 확대한다.
+/// 1.4 배로 잡는다(요구사항 예시). 축소는 이 값의 역수(1/1.4) 밑으로 내려가야 한다.
+const double kPinchZoomInRatio = 1.4;
+const double kPinchZoomOutRatio = 1.0 / 1.4;
+
+/// [z] 에서 한 단계 더 확대(month → week → day). 이미 day 면 null(변화 없음).
+GanttZoomLevel? _zoomIn(GanttZoomLevel z) {
+  switch (z) {
+    case GanttZoomLevel.month:
+      return GanttZoomLevel.week;
+    case GanttZoomLevel.week:
+      return GanttZoomLevel.day;
+    case GanttZoomLevel.day:
+      return null; // 최대 확대. 더 벌려도 그대로.
+  }
+}
+
+/// [z] 에서 한 단계 더 축소(day → week → month). 이미 month 면 null(변화 없음).
+GanttZoomLevel? _zoomOut(GanttZoomLevel z) {
+  switch (z) {
+    case GanttZoomLevel.day:
+      return GanttZoomLevel.week;
+    case GanttZoomLevel.week:
+      return GanttZoomLevel.month;
+    case GanttZoomLevel.month:
+      return null; // 최대 축소. 더 좁혀도 그대로.
   }
 }
 

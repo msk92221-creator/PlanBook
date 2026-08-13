@@ -146,6 +146,29 @@ class _PlanPageState extends State<PlanPage> {
     );
   }
 
+  /// 줌을 [z] 로 바꾼다.
+  ///
+  /// **[preserveScroll]==true(핀치 / Ctrl+휠)**: "오늘" 위치로 스크롤을 튕기지
+  /// 않는다 — 핀치/휠 중심의 날짜가 그대로 보이도록 [GanttTimeline] 이 직접 가로
+  /// 스크롤 오프셋을 보정한다. 핀치 중에 화면이 "오늘" 로 점프하면 매우 어색하므로.
+  ///
+  /// **[preserveScroll]==false(상단 버튼)**: 기존 동작("오늘" 로 스크롤) 을 유지.
+  void _setZoom(GanttZoomLevel z, {required bool preserveScroll}) {
+    if (z == _zoom) return;
+    setState(() {
+      _zoom = z;
+      if (!preserveScroll) {
+        _didInitialTodayScroll = false;
+        _lastZoomForScroll = null;
+      } else {
+        // 핀치/휠: _scheduleInitialScroll 의 "줌 바뀌면 오늘로" 분기가 다시 켜지지
+        // 않도록, 줌 추적값을 새 줌으로 맞춰둔다(GanttTimeline 이 오프셋을 보정).
+        _lastZoomForScroll = z;
+        _didInitialTodayScroll = true;
+      }
+    });
+  }
+
   Future<void> _onSample() async {
     _store.createSampleData();
     await _store.flush();
@@ -196,11 +219,8 @@ class _PlanPageState extends State<PlanPage> {
         actions: [
           _ZoomSelector(
             value: _zoom,
-            onChanged: (z) => setState(() {
-              _zoom = z;
-              _didInitialTodayScroll = false;
-              _lastZoomForScroll = null;
-            }),
+            // 버튼으로 줌을 바꿀 때는 기존 동작("오늘" 위치로 스크롤) 을 그대로 유지.
+            onChanged: (z) => _setZoom(z, preserveScroll: false),
           ),
           IconButton(
             tooltip: '오늘로 이동',
@@ -321,6 +341,7 @@ class _PlanPageState extends State<PlanPage> {
                   horizontalController: _hCtrl,
                   store: _store,
                   selectedNodeId: _selectedNodeId,
+                  onZoomChange: (z) => _setZoom(z, preserveScroll: true),
                 ),
               ),
             ],
@@ -389,6 +410,7 @@ class _PlanPageState extends State<PlanPage> {
                   horizontalController: _hCtrl,
                   store: _store,
                   selectedNodeId: _selectedNodeId,
+                  onZoomChange: (z) => _setZoom(z, preserveScroll: true),
                 ),
         ),
       ],
