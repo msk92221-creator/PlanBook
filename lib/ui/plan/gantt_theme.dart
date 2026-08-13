@@ -6,6 +6,7 @@ library;
 
 import 'package:flutter/material.dart';
 
+import '../../domain/bar_color.dart';
 import '../../domain/plan_enums.dart';
 
 /// 행 높이. 좌측 트리/우측 Gantt 가 같은 행 높이를 써야 정렬된다.
@@ -100,4 +101,67 @@ Color statusBarFillColor(BuildContext context, TaskStatus status) {
     TaskStatus.done => c.outline,
     TaskStatus.onHold => c.tertiary,
   };
+}
+
+// ---------------------------------------------------------------------------
+// 막대 색상(고정 팔레트) → 실제 Color 매핑
+//
+// `BarColor` enum 은 도메인 계층에서 "안정적인 키 + 한글 라벨" 만 갖고 실제 Color
+// 값을 갖지 않는다(라이트/다크 대응은 UI 계층 책임 — bar_color.dart 상단 주석 참고).
+// 그래서 Color 해석은 이 파일 한 곳에 모은다. 팔레트는 라이트/다크 양쪽에서
+// 흰 글자가 충분히 읽히는 채도/명도로 골랐다(이 파일 상단 원칙: "다크/라이트 모두에서
+// 읽히도록").
+// ---------------------------------------------------------------------------
+
+/// 사용자가 고른 막대 색([BarColor]) 의 실제 Color.
+///
+/// [BarColor.none] 은 "색 지정 안 함" 이라 여기서 다루지 않는다 — 호출부는
+/// [barColorOf] 가 null 을 반환하면 기존 로직([statusBarFillColor]/[barFillColor]) 으로
+/// 폴백한다. 이 방식이 기존 동작을 가장 덜 건드린다(none 일 때의 색을 여기서
+/// 임의로 재현할 필요가 없다).
+///
+/// 각 색은 라이트/다크 양쪽에서 흰 글자가 읽히도록 채도/명도를 잡았다. 다크 모드에서는
+/// 같은 색이 약간 더 밝게(트랙과의 대비를 살리기 위해) 조정된다.
+Color? barColorOf(BuildContext context, BarColor color) {
+  if (color == BarColor.none) return null; // 기존 색 로직으로 폴백하라는 신호.
+  final isDark = Theme.of(context).brightness == Brightness.dark;
+  return switch (color) {
+    BarColor.none => null,
+    BarColor.red => isDark ? const Color(0xFFEF5350) : const Color(0xFFD32F2F),
+    BarColor.orange => isDark ? const Color(0xFFFF9800) : const Color(0xFFE65100),
+    BarColor.yellow =>
+      // 노랑은 명도가 높아 흰 글자가 안 읽힌다 — 채도를 올리고 명도를 낮춰
+      // 흰 글자 대비를 확보한다(일반적인 Material yellow 500 은 검정 글자용).
+      isDark ? const Color(0xFFF9A825) : const Color(0xFFF57F17),
+    BarColor.green => isDark ? const Color(0xFF43A047) : const Color(0xFF2E7D32),
+    BarColor.blue => isDark ? const Color(0xFF1E88E5) : const Color(0xFF1565C0),
+    BarColor.purple => isDark ? const Color(0xFF8E24AA) : const Color(0xFF6A1B9A),
+    BarColor.gray => isDark ? const Color(0xFF757575) : const Color(0xFF616161),
+  };
+}
+
+/// 사용자 지정 막대 색 위에서 쓸 텍스트/아이콘 색.
+///
+/// 배경 밝기를 직접 재서 검정/흰색을 고른다(고정 팔렛트라 상수로 박아도 되지만,
+/// 라이트/다크 색차가 있어 계산이 더 견고하다). `color` 가 [BarColor.none] 이면
+/// null 을 반환해 호출부가 기존 [onBarTextColor] 로 폴백하게 한다.
+Color? onCustomBarTextColor(BuildContext context, BarColor color) {
+  final bg = barColorOf(context, color);
+  if (bg == null) return null; // 기존 글자색 로직으로 폴백.
+  // 상대 휘도(relative luminance) 근사치로 밝기 판정. 흰 글자가 더 잘 읽히면 흰색.
+  // (0.299/0.587/0.114 가중 — sRGB 근사로 충분하다.)
+  final r = (bg.r * 255.0).round().clamp(0, 255);
+  final g = (bg.g * 255.0).round().clamp(0, 255);
+  final b = (bg.b * 255.0).round().clamp(0, 255);
+  final luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+  return luminance < 140 ? Colors.white : Colors.black87;
+}
+
+/// 사용자 지정 막대 색의 "트랙(미충족 영역)" 색 — 지정 색의 옅은 버전.
+///
+/// `color` 가 [BarColor.none] 이면 null 을 반환해 기존 [barTrackColor] 로 폴백한다.
+Color? customBarTrackColor(BuildContext context, BarColor color) {
+  final bg = barColorOf(context, color);
+  if (bg == null) return null; // 기존 트랙 색으로 폴백.
+  return bg.withValues(alpha: 0.22);
 }

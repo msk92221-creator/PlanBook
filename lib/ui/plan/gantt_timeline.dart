@@ -18,6 +18,7 @@ import 'package:flutter/services.dart';
 
 import '../../core/date/plan_date.dart';
 import '../../data/plan_store.dart';
+import '../../domain/bar_color.dart';
 import '../../domain/milestone_query.dart';
 import '../../domain/plan_enums.dart';
 import '../../domain/plan_rollup.dart';
@@ -637,6 +638,7 @@ class _TimelineRow extends StatelessWidget {
                 nodeId: node.id,
                 originalStart: node.startDate,
                 originalEnd: node.endDate,
+                barColor: node.barColor,
                 // 마일스톤은 "기간" 이 아니라 "시점" 이므로 리사이즈 개념이 없다
                 // (canResizeDate 는 항상 false — 좌우 핸들 자체를 만들지 않는다).
                 // 좌우 이동(canDragDate)만 허용한다.
@@ -690,6 +692,7 @@ class _TimelineRow extends StatelessWidget {
         //  _GanttBar 내부의 _canDrag 가 이미 이 판단을 하므로 그대로 둔다.)
         draggableStart: node.startDate,
         draggableEnd: node.endDate,
+        barColor: node.barColor,
         store: store,
       );
     } else if (isOpenEnded) {
@@ -715,6 +718,7 @@ class _TimelineRow extends StatelessWidget {
         // 어떤 날짜도 커밋되지 않는다(오른쪽 끝은 "오늘"이라는 계산값이므로 드래그 금지).
         draggableStart: node.startDate,
         draggableEnd: node.endDate,
+        barColor: node.barColor,
         openEnded: true,
         store: null,
       );
@@ -799,6 +803,10 @@ class _MilestoneMarker extends StatefulWidget {
   final PlanDate? originalStart;
   final PlanDate? originalEnd;
 
+  /// 사용자가 고른 막대 색. [BarColor.none] 이면 기존 [statusAccentColor] 를 그대로
+  /// 쓴다. 마일스톤 마커에도 일반 막대와 같은 색 규칙을 적용한다.
+  final BarColor barColor;
+
   /// 드래그(이동) 허용 여부. rollup 요약 행이면 false(상위 [_TimelineRow] 판단).
   final bool canDrag;
 
@@ -814,6 +822,7 @@ class _MilestoneMarker extends StatefulWidget {
     required this.originalStart,
     required this.originalEnd,
     required this.canDrag,
+    this.barColor = BarColor.none,
     this.store,
   });
 
@@ -873,7 +882,13 @@ class _MilestoneMarkerState extends State<_MilestoneMarker> {
     final date = _displayDate;
     // 마커는 "그 날짜 칸"의 가운데에 오도록 dayWidth 절반만큼 보정한다.
     final centerX = widget.metrics.xForDate(date) + widget.metrics.dayWidth / 2;
-    final color = statusAccentColor(context, widget.status);
+    // 일반 막대와 같은 우선순위 규칙: 완료면 사용자 색 무시. 그 외 barColor 가 있으면
+    // 사용자 색, 없으면 기존 status 색([statusAccentColor]).
+    final isDone = widget.status == TaskStatus.done;
+    final color = isDone
+        ? barFillColor(context, done: true)
+        : (barColorOf(context, widget.barColor) ??
+            statusAccentColor(context, widget.status));
     final scheme = Theme.of(context).colorScheme;
 
     return Positioned(
@@ -1008,6 +1023,12 @@ class _GanttBar extends StatefulWidget {
   final String title;
   final String nodeId;
 
+  /// 사용자가 고른 막대 색. [BarColor.none] 이면 기존 status/done 색 로직을 그대로
+  /// 쓴다. 단 **완료(done)==true 면 사용자 색을 무시**하고 완료 색을 쓴다 —
+  /// 쨍한 사용자 색이 남으면 완료 여부를 한눈에 알 수 없기 때문이다(아래 build 의
+  /// 채움색 결정 참고).
+  final BarColor barColor;
+
   /// 드래그 기준이 되는 노드 **원본** 기간(rollup 요약이면 null 일 수 있음).
   final PlanDate? draggableStart;
   final PlanDate? draggableEnd;
@@ -1038,6 +1059,7 @@ class _GanttBar extends StatefulWidget {
     required this.nodeId,
     required this.draggableStart,
     required this.draggableEnd,
+    this.barColor = BarColor.none,
     this.openEnded = false,
     this.store,
   });
@@ -1253,24 +1275,41 @@ class _GanttBarState extends State<_GanttBar> {
                       borderRadius: BorderRadius.circular(kBarRadius),
                       child: Stack(
                         children: [
-                          // 트랙(미충족).
-                          Container(color: barTrackColor(context)),
+                          // 트랙(미충족). 사용자가 색을 지정했으면 그 색의 옅은 버전,
+                          // 아니면 기존 [barTrackColor].
+                          Container(
+                            color: customBarTrackColor(context, widget.barColor) ??
+                                barTrackColor(context),
+                          ),
                           // 진행 영역.
+                          //
+                          // 색 우선순위:
+                          // 1. 완료(done)==true 면 **사용자 색을 무시**하고 기존 완료
+                          //    색(barFillColor(done:true))을 쓴다. 쨍한 사용자 색으로
+                          //    남으면 완료 여부를 한눈에 알 수 없기 때문이다.
+                          // 2. barColor != none 이면 사용자가 고른 색([barColorOf]).
+                          // 3. 그 외는 기존 로직(status 색 / done 색) 을 그대로.
+                          //
+                          // done 판단을 맨 앞에 둬 barColor 와 관계없이 항상 완료 색이
+                          // 이긴다(핵심 정책).
                           Positioned.fill(
                             child: FractionallySizedBox(
                               alignment: Alignment.centerLeft,
                               widthFactor: clampedP,
                               child: Container(
                                 decoration: BoxDecoration(
-                                  color: widget.status != null
-                                      ? statusBarFillColor(
-                                          context,
-                                          widget.status!,
-                                        )
-                                      : barFillColor(
-                                          context,
-                                          done: widget.done,
-                                        ),
+                                  color: widget.done
+                                      ? barFillColor(context, done: true)
+                                      : (barColorOf(context, widget.barColor) ??
+                                          (widget.status != null
+                                              ? statusBarFillColor(
+                                                  context,
+                                                  widget.status!,
+                                                )
+                                              : barFillColor(
+                                                  context,
+                                                  done: widget.done,
+                                                ))),
                                   border: widget.isSummary
                                       ? Border.all(
                                           color: scheme.primary.withValues(
@@ -1313,14 +1352,21 @@ class _GanttBarState extends State<_GanttBar> {
                                           overflow: TextOverflow.ellipsis,
                                           style: TextStyle(
                                             fontSize: 11,
+                                            // 사용자 지정 색 위에서도 글자가
+                                            // 읽히도록: barColor 가 있으면 배경
+                                            // 밝기 기준 검정/흰색, 아니면 기존 로직.
                                             color: widget.done
                                                 ? scheme.onSurface.withValues(
                                                     alpha: 0.45,
                                                   )
-                                                : (widget.status ==
-                                                          TaskStatus.onHold
-                                                      ? scheme.onSurface
-                                                      : scheme.onPrimary),
+                                                : (onCustomBarTextColor(
+                                                          context,
+                                                          widget.barColor,
+                                                        ) ??
+                                                    (widget.status ==
+                                                            TaskStatus.onHold
+                                                        ? scheme.onSurface
+                                                        : scheme.onPrimary)),
                                             decoration: widget.done
                                                 ? TextDecoration.lineThrough
                                                 : null,
@@ -1357,7 +1403,8 @@ class _GanttBarState extends State<_GanttBar> {
                                 stops: const [0.55, 1.0],
                                 colors: [
                                   Colors.transparent,
-                                  barTrackColor(context),
+                                  customBarTrackColor(context, widget.barColor) ??
+                                      barTrackColor(context),
                                 ],
                               ),
                             ),

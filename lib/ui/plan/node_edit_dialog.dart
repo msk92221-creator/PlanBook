@@ -19,10 +19,13 @@
 /// 모든 커밋은 호출자가 [PlanStore.updateNode] 단일 경로로 보내도록 결과만 반환한다.
 library;
 
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 import '../../core/date/plan_date.dart';
 import '../../data/plan_store.dart';
+import '../../domain/bar_color.dart';
 import '../../domain/plan_enums.dart';
 import '../../domain/plan_node.dart';
 import '../../domain/plan_rollup.dart';
@@ -31,6 +34,7 @@ import '../../domain/project.dart';
 import '../../domain/recurrence.dart';
 import '../../domain/tag.dart';
 import '../common/ymd_date_picker.dart';
+import 'gantt_theme.dart';
 
 /// 편집 다이얼로그가 반환할 변경 결과. null 은 "취소".
 class NodeEditResult {
@@ -56,6 +60,9 @@ class NodeEditResult {
   final NodeKind nodeKind;
   final bool autoRollup;
 
+  /// Gantt 막대 색(고정 팔레트). [BarColor.none] 이면 "색 지정 안 함".
+  final BarColor barColor;
+
   /// [nodeKind]==recurring 일 때만 의미 있음. 그 외에는 항상 null/빈 값으로
   /// 저장되어(policy) 다른 유형으로 바꿨다가 되돌려도 예전 규칙이 유령처럼
   /// 남지 않는다.
@@ -78,6 +85,7 @@ class NodeEditResult {
     this.unit,
     this.nodeKind = NodeKind.project,
     required this.autoRollup,
+    this.barColor = BarColor.none,
     this.recurrenceRule,
   });
 
@@ -100,6 +108,7 @@ class NodeEditResult {
       unit: unit,
       nodeKind: nodeKind,
       autoRollup: autoRollup,
+      barColor: barColor,
       recurrenceFreq: nodeKind == NodeKind.recurring
           ? recurrenceRule?.freq.name
           : null,
@@ -176,6 +185,7 @@ class _NodeEditDialogState extends State<NodeEditDialog> {
   late String? _projectId;
   late Set<String> _tagIds;
   late String? _parentId;
+  late BarColor _barColor;
   late RecurrenceFreq _recurrenceFreq;
   late Set<int> _recurrenceWeekdays;
   late TextEditingController _recurrenceDayOfMonthCtrl;
@@ -205,6 +215,7 @@ class _NodeEditDialogState extends State<NodeEditDialog> {
     _projectId = n.projectId;
     _tagIds = n.tagIds.toSet();
     _parentId = n.parentId;
+    _barColor = n.barColor;
   }
 
   /// 선택 가능한 프로젝트 목록. 보관(archived)된 프로젝트는 숨기되, 현재 선택값이
@@ -624,6 +635,17 @@ class _NodeEditDialogState extends State<NodeEditDialog> {
                   border: OutlineInputBorder(),
                 ),
               ),
+              const SizedBox(height: 8),
+              // 막대 색 선택. 드롭다운보다 색 견본을 직접 보고 고르는 편이 낫다.
+              //
+              // **폼 맨 끝에 두는 이유**: 중간에 끼워 넣으면 아래쪽 필드(상위 목표
+              // 드롭다운 등)가 그만큼 밀려 내려가, 800x600 테스트 화면에서 화면 밖으로
+              // 나가 hit test 가 실패한다(실제로 기존 테스트가 그렇게 깨졌다).
+              // 맨 끝에 붙이면 기존 필드의 위치가 전혀 바뀌지 않는다.
+              _BarColorPicker(
+                selected: _barColor,
+                onSelect: (c) => setState(() => _barColor = c),
+              ),
             ],
           ),
         ),
@@ -667,6 +689,7 @@ class _NodeEditDialogState extends State<NodeEditDialog> {
       unit: _unitCtrl.text.trim().isEmpty ? null : _unitCtrl.text.trim(),
       nodeKind: _nodeKind,
       autoRollup: _autoRollup,
+      barColor: _barColor,
       recurrenceRule: _nodeKind == NodeKind.recurring
           ? RecurrenceRule(
               freq: _recurrenceFreq,
@@ -814,6 +837,97 @@ class _TagPicker extends StatelessWidget {
               ],
             ),
         ],
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 막대 색 견본 선택(동그란 swatch 가로 배열)
+// ---------------------------------------------------------------------------
+
+/// 막대 색을 8개(없음 + 7색) 동그란 견본으로 보여주고 탭해 고른다.
+/// 색상 상수는 gantt_theme.dart 의 [barColorOf] 에 모아뒀으므로 여기서는 매핑을
+/// 새로 두지 않고 그 헬퍼를 재사용한다.
+class _BarColorPicker extends StatelessWidget {
+  final BarColor selected;
+  final ValueChanged<BarColor> onSelect;
+
+  const _BarColorPicker({required this.selected, required this.onSelect});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('막대 색', style: Theme.of(context).textTheme.labelMedium),
+          const SizedBox(height: 4),
+          Wrap(
+            spacing: 8,
+            runSpacing: 6,
+            children: [
+              for (final c in BarColor.values)
+                _swatch(context, c, scheme),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _swatch(BuildContext context, BarColor c, ColorScheme scheme) {
+    final isSelected = c == selected;
+    // '없음' 은 색이 아니므로 빈 원 + 회색 테두리 + 사선으로 "지정 안 함"을 드러낸다.
+    // 나머지는 [barColorOf] 로 매핑한 실제 색으로 채운다.
+    final fill = barColorOf(context, c);
+    final none = c == BarColor.none;
+    return Semantics(
+      label: c.label,
+      button: true,
+      selected: isSelected,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: () => onSelect(c),
+        child: Container(
+          width: 30,
+          height: 30,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: fill,
+            border: Border.all(
+              // 선택된 견본은 외곽선을 두껍게/강조 색으로 둘러 선택 상태를 명확히 한다.
+              color: isSelected
+                  ? scheme.primary
+                  : (none ? scheme.outline : scheme.outlineVariant),
+              width: isSelected ? 3 : 1.5,
+            ),
+          ),
+          child: Stack(
+            alignment: Alignment.center,
+            children: [
+              // '없음' 견본: 사선(/) 표시.
+              if (none)
+                Transform.rotate(
+                  angle: -math.pi / 4,
+                  child: Container(
+                    width: 22,
+                    height: 1.6,
+                    color: scheme.outline,
+                  ),
+                ),
+              // 선택된 견본: 체크 표시(없음은 사선 위에 겹치지 않도록 생략).
+              if (isSelected && !none)
+                Icon(
+                  Icons.check,
+                  size: 16,
+                  color: onCustomBarTextColor(context, c) ?? scheme.onPrimary,
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }
