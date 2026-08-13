@@ -1,0 +1,55 @@
+# debug/* 브랜치에 푸시하면 서명된 APK 를 만들어 아티팩트로 올린다.
+#
+# 목적: 실기기에서만 재현되는 문제(현재: 안드로이드 핀치 줌)를 진단하기 위해
+# 릴리스를 내지 않고도 기기에 설치 가능한 APK 를 얻는다. 릴리스와 **같은 키**로
+# 서명하므로 정식 버전 위에 덮어쓰기 설치된다(다시 정식 버전으로 되돌아갈 때도 동일).
+#
+# 진단이 끝나면 이 워크플로는 삭제한다.
+name: Debug APK
+
+on:
+  push:
+    branches:
+      - 'debug/**'
+  workflow_dispatch:
+
+env:
+  FLUTTER_VERSION: '3.44.9'
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+      - run: flutter pub get
+      - name: Prepare release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::ANDROID_KEYSTORE_BASE64 시크릿이 없습니다."
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 --decode > android/app/planbook-release.jks
+          printf 'storeFile=planbook-release.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > android/key.properties
+      - run: flutter build apk --release
+      - name: Rename apk
+        run: |
+          mv build/app/outputs/flutter-apk/app-release.apk \
+             "PlanBook-android-debug-${GITHUB_SHA::7}.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debug-apk
+          path: PlanBook-android-debug-*.apk

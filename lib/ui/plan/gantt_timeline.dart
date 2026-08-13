@@ -32,6 +32,12 @@ import 'tree_flatten.dart';
 /// 은 이번 변경 범위가 아니므로 같은 스타일의 로컬 상수로 여기에 둔다.
 const String kOpenEndedSemantics = '종료일 미정';
 
+/// **임시 진단 플래그.** 실기기(안드로이드)에서만 핀치 줌이 동작하지 않는 원인을
+/// 찾기 위해 화면 우상단에 포인터 이벤트 통계를 띄운다. 위젯 테스트에서는 핀치가
+/// 정상 동작하는데 실기기에서만 실패하므로, 기기에서 직접 이벤트를 봐야 한다.
+/// **원인 확인 후 이 플래그와 관련 코드는 전부 제거한다.**
+const bool kPinchDebugOverlay = true;
+
 /// 우측 Gantt 타임라인 패널.
 ///
 /// [verticalController] 는 좌측 트리 패널과 동기화되는 세로 스크롤 컨트롤러(외부 주입).
@@ -97,6 +103,17 @@ class _GanttTimelineState extends State<GanttTimeline> {
   /// 두 포인터 사이 거리. 여기서부터 배율을 재서 임계값을 넘으면 한 단계씩 바꾼다.
   double? _pinchBaseDistance;
 
+  // ----- 진단 오버레이용 카운터(임시) -----
+  // 실기기에서만 핀치가 안 되는 원인을 찾기 위한 것. [kPinchDebugOverlay] 가
+  // false 면 전혀 쓰이지 않는다. 원인 확인 후 이 블록과 오버레이 위젯은 제거한다.
+  int _dbgDown = 0;
+  int _dbgMove = 0;
+  int _dbgUp = 0;
+  int _dbgCancel = 0;
+  int _dbgMaxPointers = 0;
+  int _dbgZoomReq = 0;
+  double? _dbgLastRatio;
+
   /// 줌이 바뀐 뒤 적용할 가로 스크롤 오프셋 보정 정보.
   /// (핀치/휠 중심의 날짜, 그 중심의 뷰 로컬 x).
   /// 줌 변경 → [PlanPage] 가 metrics 를 새로 계산해 rebuild → [didUpdateWidget] 에서
@@ -153,22 +170,49 @@ class _GanttTimelineState extends State<GanttTimeline> {
     if (_pointers.length == 2) {
       _pinchBaseDistance = _currentPairDistance();
     }
+    if (kPinchDebugOverlay) {
+      _dbgDown++;
+      _dbgMaxPointers = math.max(_dbgMaxPointers, _pointers.length);
+      setState(() {});
+    }
   }
 
   void _onPointerMove(PointerMoveEvent event) {
-    if (!_pointers.containsKey(event.pointer)) return;
+    // **down 을 놓쳤어도 move 로 등록한다.** 실기기에서는 두 번째 손가락의
+    // PointerDownEvent 가 이 Listener 까지 오지 않는 경우가 있는데(스크롤뷰가
+    // 포인터를 가져가거나 취소 이벤트가 끼는 등), 예전처럼 containsKey 로 걸러
+    // 버리면 그 손가락은 영원히 추적되지 않아 핀치가 성립하지 못한다.
+    // Flutter 는 down 시점 hit-test 경로에만 move 를 보내므로, 여기서 등록해도
+    // 타임라인 밖에서 시작한 포인터가 섞일 일은 없다.
     _pointers[event.pointer] = _localOf(event.position);
-    if (_pointers.length >= 2) _evaluatePinch();
+    if (kPinchDebugOverlay) {
+      _dbgMove++;
+      _dbgMaxPointers = math.max(_dbgMaxPointers, _pointers.length);
+    }
+    if (_pointers.length >= 2) {
+      // 기준 거리가 없으면(취소로 날아갔거나 down 을 놓쳤을 때) 지금 다시 잡는다.
+      _pinchBaseDistance ??= _currentPairDistance();
+      _evaluatePinch();
+    }
+    if (kPinchDebugOverlay) setState(() {});
   }
 
   void _onPointerUp(PointerUpEvent event) {
     _pointers.remove(event.pointer);
     if (_pointers.length < 2) _pinchBaseDistance = null;
+    if (kPinchDebugOverlay) {
+      _dbgUp++;
+      setState(() {});
+    }
   }
 
   void _onPointerCancel(PointerCancelEvent event) {
     _pointers.remove(event.pointer);
     if (_pointers.length < 2) _pinchBaseDistance = null;
+    if (kPinchDebugOverlay) {
+      _dbgCancel++;
+      setState(() {});
+    }
   }
 
   /// 현재 두 손가락 거리의 배율을 기준 거리와 비교해 한 단계 줌을 바꾼다.
@@ -178,6 +222,7 @@ class _GanttTimelineState extends State<GanttTimeline> {
     if (base == null || cur == null || base <= 0) return;
 
     final ratio = cur / base;
+    if (kPinchDebugOverlay) _dbgLastRatio = ratio;
     GanttZoomLevel? next;
     if (ratio >= kPinchZoomInRatio) {
       next = _zoomIn(widget.metrics.zoom);
@@ -195,6 +240,7 @@ class _GanttTimelineState extends State<GanttTimeline> {
 
   /// [newZoom] 으로 줌을 바꾸도록 [PlanPage] 에 알리고, 줌 후 스크롤 보정을 예약.
   void _requestZoom(GanttZoomLevel newZoom, double focalLocalX) {
+    if (kPinchDebugOverlay) _dbgZoomReq++;
     if (widget.onZoomChange == null) return; // 단독 테스트 등: 줌 변경 불가.
     final offset = (_hCtrl?.hasClients ?? false) ? _hCtrl!.offset : 0.0;
     // 핀치/휠 중심이 가리키는 날짜(현재 metrics + 현재 스크롤 오프셋 기준).
@@ -245,7 +291,50 @@ class _GanttTimelineState extends State<GanttTimeline> {
           onPointerUp: _onPointerUp,
           onPointerCancel: _onPointerCancel,
           onPointerSignal: _onPointerSignal,
-          child: Scrollbar(
+          // 진단 오버레이는 가로 스크롤뷰 **바깥**에 둬야 화면에 고정된다
+          // (안에 두면 콘텐츠 좌표라 스크롤하면 화면 밖으로 밀려난다).
+          child: Stack(
+            children: [
+              _buildScrollArea(metrics, viewHeight, contentWidth),
+              if (kPinchDebugOverlay)
+                Positioned(right: 4, top: 4, child: _debugOverlay(metrics)),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  /// 임시 진단 오버레이 — 실기기에서 포인터 이벤트가 어떻게 들어오는지 본다.
+  Widget _debugOverlay(GanttMetrics metrics) {
+    return IgnorePointer(
+      child: Container(
+        padding: const EdgeInsets.all(6),
+        color: Colors.black.withValues(alpha: 0.78),
+        child: Text(
+          'ptr=${_pointers.length} max=$_dbgMaxPointers\n'
+          'down=$_dbgDown move=$_dbgMove\n'
+          'up=$_dbgUp cancel=$_dbgCancel\n'
+          'base=${_pinchBaseDistance?.toStringAsFixed(0) ?? "-"}\n'
+          'ratio=${_dbgLastRatio?.toStringAsFixed(2) ?? "-"}\n'
+          'zoomReq=$_dbgZoomReq cb=${widget.onZoomChange != null}\n'
+          'zoom=${metrics.zoom.name}',
+          style: const TextStyle(
+            color: Colors.white,
+            fontSize: 11,
+            height: 1.3,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildScrollArea(
+    GanttMetrics metrics,
+    double viewHeight,
+    double contentWidth,
+  ) {
+    return Scrollbar(
             controller: widget.horizontalController,
             thumbVisibility: true,
             child: SingleChildScrollView(
@@ -298,17 +387,17 @@ class _GanttTimelineState extends State<GanttTimeline> {
                 ),
               ),
             ),
-          ),
-        );
-      },
     );
   }
 }
 
 /// 핀치 줌 임계값. 기준 거리 대비 배율이 이 값을 넘으면 한 단계 확대한다.
 /// 1.4 배로 잡는다(요구사항 예시). 축소는 이 값의 역수(1/1.4) 밑으로 내려가야 한다.
-const double kPinchZoomInRatio = 1.4;
-const double kPinchZoomOutRatio = 1.0 / 1.4;
+/// 1.4 배는 폰에서 너무 빡빡하다 — 손가락을 이미 벌린 채로 시작하면 화면 폭
+/// 때문에 물리적으로 1.4 배까지 못 벌린다(예: 400px 화면에서 200px 로 시작하면
+/// 280px 까지 벌려야 하는데 여유가 거의 없다). 1.18 배로 낮춘다.
+const double kPinchZoomInRatio = 1.18;
+const double kPinchZoomOutRatio = 1.0 / 1.18;
 
 /// [z] 에서 한 단계 더 확대(month → week → day). 이미 day 면 null(변화 없음).
 GanttZoomLevel? _zoomIn(GanttZoomLevel z) {

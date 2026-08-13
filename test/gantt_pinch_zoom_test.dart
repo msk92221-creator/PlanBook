@@ -260,16 +260,19 @@ void main() {
         initialZoom: GanttZoomLevel.week,
       );
 
-      // gap=100 → 거리 100. 10px 씩만 벌리면 거리 120, 비율 1.2 < 1.4. → 변화 없음.
+      // gap=100 → 거리 100. 5px 씩만 벌리면 거리 110, 비율 1.10 < 1.18. → 변화 없음.
+      // (임계값을 1.4 → 1.18 로 낮췄으므로 이 테스트의 이동량도 함께 줄인다.
+      //  1.4 기준이던 예전 값 10px 씩(=1.2배) 은 이제 임계값을 넘어버린다.)
       await _pinch(
         tester,
         centerX: 300,
         gap: 100,
-        delta1: const Offset(-10, 0),
-        delta2: const Offset(10, 0),
+        delta1: const Offset(-5, 0),
+        delta2: const Offset(5, 0),
       );
 
-      expect(state._zoom, GanttZoomLevel.week, reason: '임계값(1.4배) 미만이면 줌 유지');
+      expect(state._zoom, GanttZoomLevel.week,
+          reason: '임계값($kPinchZoomInRatio 배) 미만이면 줌 유지');
     });
   });
 
