@@ -6,6 +6,7 @@ import 'data/json_plan_repository.dart';
 import 'data/plan_store.dart';
 import 'data/app_dirs.dart';
 import 'ui/app.dart';
+import 'ui/common/dialog_insets.dart';
 
 /// PlanBook 진입점.
 ///
@@ -101,6 +102,7 @@ class _LifecycleFlushState extends State<_LifecycleFlush> {
       context: ctx,
       barrierDismissible: false,
       builder: (dctx) => AlertDialog(
+        insetPadding: safeDialogInsetPadding(dctx),
         title: const Text('저장하지 못했습니다'),
         content: Text(
           '변경 내용을 저장하는 데 실패했습니다.\n'

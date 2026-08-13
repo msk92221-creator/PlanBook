@@ -15,6 +15,7 @@ import '../../data/plan_store.dart';
 import '../../domain/plan_filter.dart';
 import '../../domain/project.dart';
 import '../../domain/project_stats.dart';
+import '../common/dialog_insets.dart';
 import '../common/navigation.dart';
 
 class ProjectsPage extends StatefulWidget {
@@ -71,6 +72,7 @@ class _ProjectsPageState extends State<ProjectsPage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
+        insetPadding: safeDialogInsetPadding(ctx),
         title: const Text('프로젝트 삭제'),
         content: Text(
           count > 0
@@ -203,6 +205,7 @@ Future<_ProjectEditResult?> _showEditDialog(
     context: context,
     builder: (ctx) => StatefulBuilder(
       builder: (ctx, setState) => AlertDialog(
+        insetPadding: safeDialogInsetPadding(ctx),
         title: Text(name.isEmpty ? '프로젝트 추가' : '프로젝트 편집'),
         content: Column(
           mainAxisSize: MainAxisSize.min,

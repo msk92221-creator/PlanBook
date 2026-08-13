@@ -8,6 +8,8 @@ library;
 
 import 'package:flutter/material.dart';
 
+import 'dialog_insets.dart';
+
 /// [showDatePicker] 와 동일한 반환 타입(`Future<DateTime?>`)을 갖는 대체 함수.
 /// 기존 호출부는 함수 이름만 바꾸면 그대로 쓸 수 있다.
 Future<DateTime?> showYmdDatePicker(
@@ -68,6 +70,7 @@ class _YmdPickerDialogState extends State<_YmdPickerDialog> {
     if (_day > maxDay) _day = maxDay;
 
     return AlertDialog(
+      insetPadding: safeDialogInsetPadding(context),
       title: const Text('날짜 선택'),
       content: Row(
         mainAxisSize: MainAxisSize.min,
