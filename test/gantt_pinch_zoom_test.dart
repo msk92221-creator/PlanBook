@@ -9,14 +9,14 @@ import 'package:planbook/ui/plan/gantt_metrics.dart';
 import 'package:planbook/ui/plan/gantt_timeline.dart';
 import 'package:planbook/ui/plan/tree_flatten.dart';
 
-/// 두 손가락(핀치) 확대/축소 + Ctrl+휠 줌 을 검증하는 위젯 테스트.
+/// 두 손가락(핀치) **연속** 확대/축소 + Ctrl+휠 줌 검증.
 ///
-/// **왜 [GanttTimeline] 을 직접 pump 하는가**: 핀치로 줌이 바뀌면 [GanttTimeline] 이
-/// `onZoomChange` 로 새 줌을 알리고, 호출부([_ZoomHost]) 가 metrics 를 새로 계산해
-/// rebuild 한다. 줌 상태 소유자가 분리되어 있으므로 [PlanPage] 까지 띄울 필요 없이
-/// [_ZoomHost] 만으로 줌 전환 + 가로 스크롤 오프셋 보정을 정확히 검증할 수 있다.
-/// (gantt_drag_widget_test.dart 와 같은 취지 — PlanPage 의 "오늘로 스크롤" postFrame
-/// 이 오프셋을 비결정적으로 만드는 걸 피한다.)
+/// 줌은 고정 단계를 건너뛰지 않고 손가락 간격 배율만큼 하루 폭이 연속으로 바뀐다.
+/// 눈금 단위(일/주/월/분기/년)는 그 폭에서 자동으로 파생된다.
+///
+/// **왜 [GanttTimeline] 을 직접 pump 하는가**: 줌 상태는 호출부가 소유하므로
+/// [_ZoomHost] 만으로 축척 변화 + 가로 스크롤 보정을 정확히 검증할 수 있다.
+/// (PlanPage 의 "오늘로 스크롤" postFrame 이 오프셋을 비결정적으로 만드는 걸 피한다.)
 
 class _MemoryRepo implements PlanRepository {
   PlanSnapshot? _snap;
@@ -42,26 +42,23 @@ Future<PlanStore> _emptyStore() async {
 final _firstDay = PlanDate(2026, 1, 1);
 final _lastDay = PlanDate(2026, 3, 31);
 
-GanttMetrics _metricsFor(GanttZoomLevel zoom) => GanttMetrics(
+GanttMetrics _metricsFor(double dayWidth) => GanttMetrics(
       firstDay: _firstDay,
       lastDay: _lastDay,
-      dayWidth: zoom.dayWidth,
-      zoom: zoom,
+      dayWidth: dayWidth,
     );
 
-/// [GanttTimeline] 을 감싸며 줌 상태를 소유하는 호스트. `onZoomChange` 가 오면
-/// 줌을 바꿔 metrics 를 새로 계산하고 rebuild 한다(PlanPage 의 역할을 최소로 흉내).
 class _ZoomHost extends StatefulWidget {
   final PlanStore store;
   final ScrollController horizontalController;
   final Size viewSize;
-  final GanttZoomLevel initialZoom;
+  final double initialDayWidth;
 
   const _ZoomHost({
     required this.store,
     required this.horizontalController,
     required this.viewSize,
-    required this.initialZoom,
+    required this.initialDayWidth,
   });
 
   @override
@@ -69,12 +66,12 @@ class _ZoomHost extends StatefulWidget {
 }
 
 class _ZoomHostState extends State<_ZoomHost> {
-  late GanttZoomLevel _zoom;
+  late double _dayWidth;
 
   @override
   void initState() {
     super.initState();
-    _zoom = widget.initialZoom;
+    _dayWidth = widget.initialDayWidth;
   }
 
   @override
@@ -88,11 +85,11 @@ class _ZoomHostState extends State<_ZoomHost> {
           child: GanttTimeline(
             tree: widget.store.tree,
             rows: rows,
-            metrics: _metricsFor(_zoom),
+            metrics: _metricsFor(_dayWidth),
             today: PlanDate(2026, 1, 1),
             horizontalController: widget.horizontalController,
             store: widget.store,
-            onZoomChange: (z) => setState(() => _zoom = z),
+            onDayWidthChange: (w) => setState(() => _dayWidth = w),
           ),
         ),
       ),
@@ -100,13 +97,12 @@ class _ZoomHostState extends State<_ZoomHost> {
   }
 }
 
-/// [_ZoomHost] 를 고정 뷰 크기로 pump 한다.
 Future<_ZoomHostState> _pumpHost(
   WidgetTester tester, {
   required PlanStore store,
   required ScrollController horizontalController,
   Size viewSize = const Size(600, 400),
-  GanttZoomLevel initialZoom = GanttZoomLevel.week,
+  double initialDayWidth = 18.0,
 }) async {
   tester.view.physicalSize = viewSize * tester.view.devicePixelRatio;
   tester.view.devicePixelRatio = 1.0;
@@ -117,19 +113,16 @@ Future<_ZoomHostState> _pumpHost(
       store: store,
       horizontalController: horizontalController,
       viewSize: viewSize,
-      initialZoom: initialZoom,
+      initialDayWidth: initialDayWidth,
     ),
   );
   await tester.pumpAndSettle();
-  // 주입한 컨트롤러가 attach 될 때까지 한 프레임 더.
   await tester.pump();
   return tester.state(find.byType(_ZoomHost)) as _ZoomHostState;
 }
 
-/// 두 손가락을 [centerX] 를 중심으로 간격 [gap] 으로 동시에 누르고, 각각
-/// [delta1]/[delta2] 만큼 이동시킨 뒤 손을 뗀다. 핀치 제스처를 흉내낸다.
-/// 두 손가락의 y 는 헤더 영역(제스처 디텍터가 없는 곳) 으로 둬 막대 드래그와
-/// 간섭하지 않게 한다.
+/// 두 손가락을 [centerX] 중심 [gap] 간격으로 누르고 각각 [delta1]/[delta2] 만큼
+/// 움직인 뒤 뗀다. y 는 헤더 영역(막대 드래그와 간섭 없는 곳).
 Future<void> _pinch(
   WidgetTester tester, {
   required double centerX,
@@ -140,22 +133,30 @@ Future<void> _pinch(
 }) async {
   final g1 = await tester.startGesture(Offset(centerX - gap / 2, y));
   final g2 = await tester.startGesture(Offset(centerX + gap / 2, y));
-  // 두 손가락이 모두 눌린 뒤(핀치 기준 거리 확정) 이동시킨다.
-  if (delta1 != Offset.zero) {
-    await g1.moveBy(delta1);
-  }
-  if (delta2 != Offset.zero) {
-    await g2.moveBy(delta2);
-  }
+  if (delta1 != Offset.zero) await g1.moveBy(delta1);
+  if (delta2 != Offset.zero) await g2.moveBy(delta2);
   await tester.pump();
   await g1.up();
   await g2.up();
   await tester.pumpAndSettle();
 }
 
+/// Ctrl 을 누른 채 휠을 굴린다. [dy] 가 음수면 위로(확대).
+Future<void> _ctrlWheel(
+  WidgetTester tester,
+  Offset at, {
+  required double dy,
+}) async {
+  await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+  final pointer = TestPointer(1, PointerDeviceKind.mouse)..hover(at);
+  await tester.sendEventToBinding(pointer.scroll(Offset(0, dy)));
+  await tester.pumpAndSettle();
+  await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+}
+
 void main() {
-  group('핀치 확대/축소 — 3단계 줌 사이를 오간다', () {
-    testWidgets('두 손가락을 벌리면 한 단계 확대된다 (week → day)', (tester) async {
+  group('핀치는 손가락 간격 배율만큼 연속으로 축척을 바꾼다', () {
+    testWidgets('간격을 1.5배로 벌리면 하루 폭도 약 1.5배가 된다', (tester) async {
       final store = await _emptyStore();
       final ctrl = ScrollController();
       addTearDown(ctrl.dispose);
@@ -163,23 +164,23 @@ void main() {
         tester,
         store: store,
         horizontalController: ctrl,
-        initialZoom: GanttZoomLevel.week,
+        initialDayWidth: 10.0,
       );
 
-      // gap=100 → 기준 거리 100. 양쪽으로 30px 씩 더 벌리면 거리 160, 비율 1.6 ≥ 1.4.
+      // gap=100 → 양쪽 25px 씩 벌리면 거리 150 = 1.5배.
       await _pinch(
         tester,
         centerX: 300,
         gap: 100,
-        delta1: const Offset(-30, 0),
-        delta2: const Offset(30, 0),
+        delta1: const Offset(-25, 0),
+        delta2: const Offset(25, 0),
       );
 
-      expect(state._zoom, GanttZoomLevel.day,
-          reason: '핀치 아웃(벌리기) 은 확대 방향으로 한 단계 이동해야 한다');
+      expect(state._dayWidth, closeTo(15.0, 0.6),
+          reason: '고정 단계로 점프하지 않고 배율만큼 연속으로 커져야 한다');
     });
 
-    testWidgets('두 손가락을 좁히면 한 단계 축소된다 (week → month)', (tester) async {
+    testWidgets('간격을 절반으로 좁히면 하루 폭도 약 절반이 된다', (tester) async {
       final store = await _emptyStore();
       final ctrl = ScrollController();
       addTearDown(ctrl.dispose);
@@ -187,23 +188,22 @@ void main() {
         tester,
         store: store,
         horizontalController: ctrl,
-        initialZoom: GanttZoomLevel.week,
+        initialDayWidth: 20.0,
       );
 
-      // gap=100 → 기준 거리 100. 양쪽으로 20px 씩 좁히면 거리 60, 비율 0.6 ≤ 1/1.4.
       await _pinch(
         tester,
         centerX: 300,
         gap: 100,
-        delta1: const Offset(20, 0),
-        delta2: const Offset(-20, 0),
+        delta1: const Offset(25, 0),
+        delta2: const Offset(-25, 0),
       );
 
-      expect(state._zoom, GanttZoomLevel.month,
-          reason: '핀치 인(좁히기) 은 축소 방향으로 한 단계 이동해야 한다');
+      expect(state._dayWidth, closeTo(10.0, 0.6));
     });
 
-    testWidgets('year(최대 축소) 에서 더 좁혀도 그대로 year 다', (tester) async {
+    testWidgets('아주 조금만 벌려도 그만큼 반응한다(예전의 임계값 대기가 없다)',
+        (tester) async {
       final store = await _emptyStore();
       final ctrl = ScrollController();
       addTearDown(ctrl.dispose);
@@ -211,22 +211,26 @@ void main() {
         tester,
         store: store,
         horizontalController: ctrl,
-        initialZoom: GanttZoomLevel.year,
+        initialDayWidth: 10.0,
       );
 
-      // 아무리 세게 좁혀도(거리 100 → 10) year 아래 단계는 없다.
+      // 양쪽 3px 씩 = 거리 106 → 1.06배. 예전 임계값(1.18)에는 못 미치던 양이라
+      // 그때는 아무 반응이 없었다.
       await _pinch(
         tester,
         centerX: 300,
         gap: 100,
-        delta1: const Offset(45, 0),
-        delta2: const Offset(-45, 0),
+        delta1: const Offset(-3, 0),
+        delta2: const Offset(3, 0),
       );
 
-      expect(state._zoom, GanttZoomLevel.year, reason: '최대 축소 단계에서 더 축소 불가');
+      expect(state._dayWidth, greaterThan(10.0),
+          reason: '작은 움직임에도 즉시 반응해야 부드럽게 느껴진다');
+      expect(state._dayWidth, lessThan(11.5),
+          reason: '움직인 만큼만 바뀌어야 한다(과반응 금지)');
     });
 
-    testWidgets('day(최대 확대) 에서 더 벌려도 그대로 day 다', (tester) async {
+    testWidgets('상한을 넘겨 벌려도 kMaxDayWidth 에서 멈춘다', (tester) async {
       final store = await _emptyStore();
       final ctrl = ScrollController();
       addTearDown(ctrl.dispose);
@@ -234,10 +238,9 @@ void main() {
         tester,
         store: store,
         horizontalController: ctrl,
-        initialZoom: GanttZoomLevel.day,
+        initialDayWidth: kMaxDayWidth,
       );
 
-      // 아무리 세게 벌려도 day 위 단계는 없다.
       await _pinch(
         tester,
         centerX: 300,
@@ -246,10 +249,10 @@ void main() {
         delta2: const Offset(80, 0),
       );
 
-      expect(state._zoom, GanttZoomLevel.day, reason: '최대 확대 단계에서 더 확대 불가');
+      expect(state._dayWidth, kMaxDayWidth);
     });
 
-    testWidgets('임계값 이하로 살짝 움직이면 줌이 바뀌지 않는다', (tester) async {
+    testWidgets('하한 밑으로 좁혀도 kMinDayWidth 에서 멈춘다', (tester) async {
       final store = await _emptyStore();
       final ctrl = ScrollController();
       addTearDown(ctrl.dispose);
@@ -257,49 +260,81 @@ void main() {
         tester,
         store: store,
         horizontalController: ctrl,
-        initialZoom: GanttZoomLevel.week,
+        initialDayWidth: kMinDayWidth,
       );
 
-      // gap=100 → 거리 100. 5px 씩만 벌리면 거리 110, 비율 1.10 < 1.18. → 변화 없음.
-      // (임계값을 1.4 → 1.18 로 낮췄으므로 이 테스트의 이동량도 함께 줄인다.
-      //  1.4 기준이던 예전 값 10px 씩(=1.2배) 은 이제 임계값을 넘어버린다.)
       await _pinch(
         tester,
         centerX: 300,
         gap: 100,
-        delta1: const Offset(-5, 0),
-        delta2: const Offset(5, 0),
+        delta1: const Offset(45, 0),
+        delta2: const Offset(-45, 0),
       );
 
-      expect(state._zoom, GanttZoomLevel.week,
-          reason: '임계값($kPinchZoomInRatio 배) 미만이면 줌 유지');
+      expect(state._dayWidth, kMinDayWidth);
+    });
+  });
+
+  group('눈금 단위는 축척에서 자동으로 파생된다', () {
+    test('넓을수록 잘게, 좁을수록 굵게', () {
+      expect(GanttZoomLevel.forDayWidth(40), GanttZoomLevel.day);
+      expect(GanttZoomLevel.forDayWidth(20), GanttZoomLevel.day);
+      expect(GanttZoomLevel.forDayWidth(12), GanttZoomLevel.week);
+      expect(GanttZoomLevel.forDayWidth(7), GanttZoomLevel.week);
+      expect(GanttZoomLevel.forDayWidth(4), GanttZoomLevel.month);
+      expect(GanttZoomLevel.forDayWidth(2), GanttZoomLevel.month);
+      expect(GanttZoomLevel.forDayWidth(1.2), GanttZoomLevel.quarter);
+      expect(GanttZoomLevel.forDayWidth(0.8), GanttZoomLevel.quarter);
+      expect(GanttZoomLevel.forDayWidth(0.5), GanttZoomLevel.year);
+      expect(GanttZoomLevel.forDayWidth(kMinDayWidth), GanttZoomLevel.year);
+    });
+
+    testWidgets('핀치로 축척이 줄면 눈금 단위도 따라 굵어진다', (tester) async {
+      final store = await _emptyStore();
+      final ctrl = ScrollController();
+      addTearDown(ctrl.dispose);
+      final state = await _pumpHost(
+        tester,
+        store: store,
+        horizontalController: ctrl,
+        initialDayWidth: 20.0, // 일 눈금
+      );
+      expect(_metricsFor(state._dayWidth).zoom, GanttZoomLevel.day);
+
+      // 0.25배로 좁힌다 → 5px/일 → 월 눈금.
+      await _pinch(
+        tester,
+        centerX: 300,
+        gap: 160,
+        delta1: const Offset(60, 0),
+        delta2: const Offset(-60, 0),
+      );
+
+      expect(_metricsFor(state._dayWidth).zoom, GanttZoomLevel.month,
+          reason: '축척이 줄면 헤더 눈금도 자동으로 굵어져야 한다');
     });
   });
 
   group('줌 후 보고 있던 날짜 유지 (스크롤 오프셋 보정)', () {
-    testWidgets('핀치 중심의 날짜가 줌 후에도 같은 화면 x 에 남는다', (tester) async {
+    testWidgets('핀치 중심의 날짜가 줌 후에도 같은 화면 x 근처에 남는다', (tester) async {
       final store = await _emptyStore();
       final ctrl = ScrollController();
       addTearDown(ctrl.dispose);
-      // day 줌(dayWidth=40) 으로 시작. content 폭 = 90*40 = 3600, 뷰 폭 600 → 스크롤 가능.
       final state = await _pumpHost(
         tester,
         store: store,
         horizontalController: ctrl,
         viewSize: const Size(600, 400),
-        initialZoom: GanttZoomLevel.day,
+        initialDayWidth: 40.0,
       );
 
-      // 스크롤을 오른쪽으로 어느 정도 옮겨둔다(오프셋 800).
       ctrl.jumpTo(800);
       await tester.pumpAndSettle();
       final offsetBefore = ctrl.offset;
 
-      // 핀치 중심을 화면 x=300 에 둔다. 그 위치의 날짜(오프셋+300 = 1100px = 27.5일째 칸
-      // → floor → 27일 → firstDay+27 = 2026-01-28).
       const focalX = 300.0;
-      // 축소(day → week) 시킨다(두 손가락을 좁힌다). gap=100 기준, 25px 씩 좁히면
-      // 거리 50, 비율 0.5 ≤ 1/1.4.
+      final focalDate = _metricsFor(40.0).dayColumnForX(offsetBefore + focalX);
+
       await _pinch(
         tester,
         centerX: focalX,
@@ -308,25 +343,16 @@ void main() {
         delta2: const Offset(-25, 0),
       );
 
-      expect(state._zoom, GanttZoomLevel.week);
-
-      // 보정 후: newMetrics.xForDate(focalDate) - focalX == newOffset (clamp 내).
-      final focalDate = _metricsFor(GanttZoomLevel.day).dayColumnForX(
-        offsetBefore + focalX,
-      );
-      final newMetrics = _metricsFor(GanttZoomLevel.week);
-      final expectedOffset =
-          (newMetrics.xForDate(focalDate) - focalX).clamp(0.0, ctrl.position.maxScrollExtent);
-      expect(ctrl.offset, closeTo(expectedOffset, 0.5),
-          reason: '핀치 중심 날짜가 같은 화면 x(=$focalX) 에 오도록 오프셋이 보정돼야 한다');
-      // 그 날짜가 실제로 화면 x=focalX 에 있는지도 확인.
+      final newMetrics = _metricsFor(state._dayWidth);
       final dateAtFocal = newMetrics.dayColumnForX(ctrl.offset + focalX);
-      expect(dateAtFocal, focalDate);
+      // 축척이 바뀌면 하루 칸이 좁아져 반올림 오차가 생기므로 며칠 이내면 통과.
+      expect(daysBetween(focalDate, dateAtFocal).abs(), lessThanOrEqualTo(2),
+          reason: '핀치 중심 날짜가 화면 같은 자리 근처에 남아야 한다');
     });
   });
 
   group('데스크톱: Ctrl + 마우스 휠', () {
-    testWidgets('Ctrl 을 누르고 휠을 위로 굴리면 한 단계 확대된다', (tester) async {
+    testWidgets('Ctrl+휠 위로 굴리면 kWheelZoomStep 배만큼 확대된다', (tester) async {
       final store = await _emptyStore();
       final ctrl = ScrollController();
       addTearDown(ctrl.dispose);
@@ -334,20 +360,14 @@ void main() {
         tester,
         store: store,
         horizontalController: ctrl,
-        initialZoom: GanttZoomLevel.week,
+        initialDayWidth: 10.0,
       );
 
-      // Ctrl 키를 누른 상태로 마우스 휠 "위"(scrollDelta.dy 가 음수) 를 굴린다.
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
-      await _wheel(tester, const Offset(300, 26), scrollDeltaY: -100);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
-      await tester.pumpAndSettle();
-
-      expect(state._zoom, GanttZoomLevel.day,
-          reason: 'Ctrl+휠 위 = 확대 한 단계');
+      await _ctrlWheel(tester, const Offset(300, 26), dy: -1);
+      expect(state._dayWidth, closeTo(10.0 * kWheelZoomStep, 0.01));
     });
 
-    testWidgets('Ctrl 을 누르고 휠을 아래로 굴리면 한 단계 축소된다', (tester) async {
+    testWidgets('Ctrl+휠 아래로 굴리면 그만큼 축소된다', (tester) async {
       final store = await _emptyStore();
       final ctrl = ScrollController();
       addTearDown(ctrl.dispose);
@@ -355,18 +375,14 @@ void main() {
         tester,
         store: store,
         horizontalController: ctrl,
-        initialZoom: GanttZoomLevel.week,
+        initialDayWidth: 10.0,
       );
 
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
-      await _wheel(tester, const Offset(300, 26), scrollDeltaY: 100);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
-      await tester.pumpAndSettle();
-
-      expect(state._zoom, GanttZoomLevel.month, reason: 'Ctrl+휠 아래 = 축소 한 단계');
+      await _ctrlWheel(tester, const Offset(300, 26), dy: 1);
+      expect(state._dayWidth, closeTo(10.0 / kWheelZoomStep, 0.01));
     });
 
-    testWidgets('Ctrl 없이 휠을 굴리면 줌이 바뀌지 않는다 (기본 스크롤 동작)', (tester) async {
+    testWidgets('Ctrl 없는 휠은 축척을 바꾸지 않는다', (tester) async {
       final store = await _emptyStore();
       final ctrl = ScrollController();
       addTearDown(ctrl.dispose);
@@ -374,37 +390,15 @@ void main() {
         tester,
         store: store,
         horizontalController: ctrl,
-        initialZoom: GanttZoomLevel.week,
+        initialDayWidth: 10.0,
       );
 
-      // Ctrl 키 없이 휠만.
-      await _wheel(tester, const Offset(300, 26), scrollDeltaY: -100);
+      final pointer = TestPointer(1, PointerDeviceKind.mouse)
+        ..hover(const Offset(300, 26));
+      await tester.sendEventToBinding(pointer.scroll(const Offset(0, -1)));
       await tester.pumpAndSettle();
 
-      expect(state._zoom, GanttZoomLevel.week, reason: 'Ctrl 없는 휠은 줌을 바꾸지 않는다');
+      expect(state._dayWidth, 10.0);
     });
   });
-}
-
-/// [offset](위젯 전역 좌표) 위치에서 마우스 휠 [PointerScrollEvent] 를 발생시킨다.
-/// [scrollDeltaY] 가 양수면 휠 아래, 음수면 휠 위. [GanttTimeline] 의 Listener 가
-/// onPointerSignal 로 받는다.
-Future<void> _wheel(
-  WidgetTester tester,
-  Offset offset, {
-  required double scrollDeltaY,
-}) async {
-  // 마우스 포인터를 해당 위치에 올려 hit-test 경로에 넣은 뒤 휠 시그널을 발생시킨다.
-  final gesture = await tester.createGesture(kind: PointerDeviceKind.mouse);
-  await gesture.addPointer(location: offset);
-  await tester.pump();
-  tester.binding.handlePointerEvent(
-    PointerScrollEvent(
-      kind: PointerDeviceKind.mouse,
-      position: offset,
-      scrollDelta: Offset(0, scrollDeltaY),
-    ),
-  );
-  await tester.pump();
-  await gesture.removePointer();
 }

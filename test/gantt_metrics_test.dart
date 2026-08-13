@@ -7,13 +7,11 @@ GanttMetrics _metrics({
   required PlanDate first,
   required PlanDate last,
   required double dayWidth,
-  GanttZoomLevel zoom = GanttZoomLevel.day,
 }) {
   return GanttMetrics(
     firstDay: first,
     lastDay: last,
     dayWidth: dayWidth,
-    zoom: zoom,
   );
 }
 
@@ -26,7 +24,6 @@ void main() {
           first: PlanDate(2024, 8, 1),
           last: PlanDate(2024, 8, 31),
           dayWidth: zoom.dayWidth,
-          zoom: zoom,
         );
         for (final d in [
           PlanDate(2024, 8, 1),
@@ -173,7 +170,6 @@ void main() {
         first: PlanDate(2024, 8, 1),
         last: PlanDate(2024, 8, 31),
         dayWidth: 18,
-        zoom: GanttZoomLevel.week,
       );
       final today = PlanDate(2024, 8, 16);
       expect(m.xForToday(today), m.xForDate(today));
@@ -193,7 +189,7 @@ void main() {
       ];
       final m = computeGanttMetrics(
         visibleNodes: nodes,
-        zoom: GanttZoomLevel.day,
+        dayWidth: GanttZoomLevel.day.dayWidth,
         today: today,
         padDaysBefore: 7,
         padDaysAfter: 7,
@@ -207,7 +203,7 @@ void main() {
       final today = PlanDate(2024, 8, 16);
       final m = computeGanttMetrics(
         visibleNodes: [PlanNode(id: 'a', title: 'a')],
-        zoom: GanttZoomLevel.week,
+        dayWidth: GanttZoomLevel.day.dayWidth,
         today: today,
         padDaysBefore: 14,
         padDaysAfter: 30,
@@ -240,7 +236,7 @@ void main() {
       ];
       final m = computeGanttMetrics(
         visibleNodes: nodes,
-        zoom: GanttZoomLevel.day,
+        dayWidth: GanttZoomLevel.day.dayWidth,
         today: today,
         padDaysBefore: 7,
         padDaysAfter: 7,
@@ -255,7 +251,7 @@ void main() {
       final today = PlanDate(2024, 8, 16);
       final m = computeGanttMetrics(
         visibleNodes: const [],
-        zoom: GanttZoomLevel.month,
+        dayWidth: GanttZoomLevel.day.dayWidth,
         today: today,
       );
       expect(m.dayCount, greaterThan(0));
@@ -277,7 +273,7 @@ void main() {
       ];
       final m = computeGanttMetrics(
         visibleNodes: nodes,
-        zoom: GanttZoomLevel.day,
+        dayWidth: GanttZoomLevel.day.dayWidth,
         today: today,
         padDaysBefore: 7,
         padDaysAfter: 7,
@@ -306,7 +302,7 @@ void main() {
       ];
       final m = computeGanttMetrics(
         visibleNodes: nodes,
-        zoom: GanttZoomLevel.day,
+        dayWidth: GanttZoomLevel.day.dayWidth,
         today: today,
         padDaysBefore: 7,
         padDaysAfter: 7,
@@ -326,7 +322,7 @@ void main() {
       ];
       final m = computeGanttMetrics(
         visibleNodes: nodes,
-        zoom: GanttZoomLevel.day,
+        dayWidth: GanttZoomLevel.day.dayWidth,
         today: today,
         padDaysBefore: 7,
         padDaysAfter: 7,
@@ -343,7 +339,6 @@ void main() {
         first: PlanDate(2024, 8, 1),
         last: PlanDate(2024, 8, 10),
         dayWidth: 40,
-        zoom: GanttZoomLevel.day,
       );
       final cells = buildHeaderCells(m);
       expect(cells.length, 10);
@@ -359,7 +354,6 @@ void main() {
         first: PlanDate(2024, 8, 7),
         last: PlanDate(2024, 8, 20),
         dayWidth: 18,
-        zoom: GanttZoomLevel.week,
       );
       final cells = buildHeaderCells(m);
       expect(cells.first.date, PlanDate(2024, 8, 5));
@@ -370,7 +364,6 @@ void main() {
         first: PlanDate(2024, 8, 10),
         last: PlanDate(2024, 10, 15),
         dayWidth: 5,
-        zoom: GanttZoomLevel.month,
       );
       final cells = buildHeaderCells(m);
       expect(cells.first.date, PlanDate(2024, 8, 1));
@@ -386,7 +379,6 @@ void main() {
         first: PlanDate(2024, 8, 5),
         last: PlanDate(2024, 8, 11),
         dayWidth: 40,
-        zoom: GanttZoomLevel.day,
       );
       final offsets = weekendDayOffsets(m);
       expect(offsets, containsAll(const [5, 6]));
@@ -397,7 +389,6 @@ void main() {
         first: PlanDate(2024, 8, 5),
         last: PlanDate(2024, 8, 11),
         dayWidth: 18,
-        zoom: GanttZoomLevel.week,
       );
       expect(weekendDayOffsets(m), isEmpty);
     });
@@ -411,7 +402,6 @@ void _zoomOutLevelsTests() {
         firstDay: PlanDate(2026, 2, 15),
         lastDay: PlanDate(2026, 11, 20),
         dayWidth: GanttZoomLevel.quarter.dayWidth,
-        zoom: GanttZoomLevel.quarter,
       );
       final cells = buildHeaderCells(m);
       // 2/15 가 속한 분기(Q1=1/1)부터 11/20 이 속한 분기(Q4=10/1)까지 4개.
@@ -428,7 +418,6 @@ void _zoomOutLevelsTests() {
         firstDay: PlanDate(2026, 6, 1),
         lastDay: PlanDate(2028, 3, 1),
         dayWidth: GanttZoomLevel.year.dayWidth,
-        zoom: GanttZoomLevel.year,
       );
       final cells = buildHeaderCells(m);
       expect(cells.map((c) => c.label).toList(), ['2026', '2027', '2028']);

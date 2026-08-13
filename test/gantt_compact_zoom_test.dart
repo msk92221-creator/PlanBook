@@ -37,7 +37,6 @@ GanttMetrics _metrics(GanttZoomLevel zoom) => GanttMetrics(
       firstDay: PlanDate(2026, 1, 1),
       lastDay: PlanDate(2026, 12, 31),
       dayWidth: zoom.dayWidth,
-      zoom: zoom,
     );
 
 Future<Offset> _pump(
