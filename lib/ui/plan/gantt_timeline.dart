@@ -435,14 +435,28 @@ class _HeaderPainter extends CustomPainter {
         textDirection: TextDirection.ltr,
         textAlign: TextAlign.center,
       )..layout();
-      // 칸보다 라벨이 넓으면 아예 그리지 않는다. 억지로 그리면 옆 칸 라벨과 겹쳐
-      // 글자가 뭉개지기만 한다(축소할수록 눈금이 촘촘해지므로 실제로 자주 생긴다).
-      if (painter.width > c.width - 2) continue;
-      // clamp 는 하한 > 상한이면 예외를 던진다. 전체 폭이 라벨보다도 좁은 극단적
-      // 축소에서는 상한이 하한보다 작아지므로, 그 경우 중앙 정렬만 하고 넘어간다.
-      final maxTx = size.width - painter.width - 2;
+      // **라벨은 반드시 자기 셀의 가시 영역 안에만 그린다.**
+      //
+      // 예전에는 x 를 화면 전체 폭(2 ~ size.width-2)으로 clamp 했다. 문제는 헤더 셀이
+      // 표시 범위보다 앞에서 시작할 수 있다는 것이다 — 예컨대 표시 범위가 2025-11-20
+      // 부터인데 연 단위 셀은 2025-01-01 에서 시작하므로 c.x 가 크게 음수다. 그러면
+      // 셀 중앙(centered) 도 음수가 되고, 화면 끝(2.0) 으로 clamp 하면 "2025" 라벨이
+      // 화면 맨 왼쪽에 그려진다. 하지만 그 셀의 화면상 실제 영역은 몇 픽셀뿐이라
+      // 라벨이 오른쪽 이웃 셀("2026") 영역까지 밀고 들어가 겹쳐 보인다.
+      // → 따라서 clamp 범위를 화면 끝이 아니라 **이 셀의 가시 영역** 으로 잡는다.
+      final visibleLeft = math.max(c.x, 0.0);
+      final visibleRight = math.min(c.x + c.width, size.width);
+      // 가시 폭이 라벨(양끝 2px 여유 포함) 보다 좁으면 아예 그리지 않는다.
+      // 억지로 그리면 부족한 만큼 무조건 이웃 칸을 침범한다. (예전의 "칸보다 라벨이
+      // 넓으면 skip" 규칙도 이 조건으로 자연스럽게 포함된다.)
+      if (visibleRight - visibleLeft < painter.width + 4) continue;
+      final lower = visibleLeft + 2;
+      final upper = visibleRight - painter.width - 2;
+      // 부동소수 오차로 upper < lower 가 뒤집힐 수 있으니 방어적으로 한 번 더 검사.
+      if (upper < lower) continue;
+      // 기준점은 셀 중앙. 그 위 범위를 벗어나지 않게 가시 영역으로 clamp 한다.
       final centered = c.x + c.width / 2 - painter.width / 2;
-      final tx = maxTx <= 2.0 ? centered : centered.clamp(2.0, maxTx);
+      final tx = centered.clamp(lower, upper);
       final ty = (size.height - painter.height) / 2;
       painter.paint(canvas, Offset(tx, ty));
 

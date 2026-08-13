@@ -19,7 +19,21 @@ const double kHeaderHeight = 52.0;
 const double kTreePaneWidth = 300.0;
 
 /// 이 폭(논리 px) 이상이면 좌우 2분할, 미만이면 트리/타임라인 전환 모드.
+///
+/// **주의:** 이 값은 AppShell(NavigationRail/NavigationBar 전환) 과 Calendar 화면이
+/// 함께 공유한다. 그래서 **이 상수 자체는 720 으로 둔다** — 이 값을 폴드 접힘 폭까지
+/// 낮추면 AppShell 이 400px 폭에서 NavigationRail 로 바뀐다(관련 테스트:
+/// app_shell_test, fold_responsive_test). Gantt 화면만의 "트리+타임라인 2분할" 한계치는
+/// 아래 [kGanttTwoPaneBreakpoint] 를 따로 둔다.
 const double kTwoPaneBreakpoint = 720.0;
+
+/// Gantt(PlanPage) 전용 2분할 한계치.
+///
+/// 폴드7 접힌 커버 화면(논리 폭 약 380~430) 에서도 트리/타임라인을 **동시에** 보게
+/// 하려고 [kTwoPaneBreakpoint] 보다 훨씬 낮게 잡았다. 380 미만의 소형 폰에서는
+/// 양쪽 다 못 쓸 정도로 좁아지므로 여전히 전환 탭 모드로 둔다. AppShell 의
+/// Rail/Bar 전환과는 별개로 동작한다.
+const double kGanttTwoPaneBreakpoint = 380.0;
 
 /// Gantt 바 모서리 반경.
 const double kBarRadius = 6.0;

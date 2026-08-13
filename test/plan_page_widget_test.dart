@@ -110,8 +110,10 @@ void main() {
       expect(find.text('PlanBook 앱 개발'), findsWidgets);
     });
 
-    testWidgets('9-narrow) 좁은 폭(400)에서 전환 UI 와 함께 렌더', (tester) async {
-      tester.view.physicalSize = const Size(400, 800);
+    testWidgets('9-narrow) 좁은 폭(360)에서 전환 UI 와 함께 렌더', (tester) async {
+      // 폴드 접힘 폭(380) 미만의 소형 화면에서는 트리/타임라인 전환 탭 모드.
+      // (380 이상은 이제 2분할로 트리와 타임라인이 동시에 보인다.)
+      tester.view.physicalSize = const Size(360, 800);
       tester.view.devicePixelRatio = 1.0;
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);

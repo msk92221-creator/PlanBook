@@ -266,7 +266,13 @@ class _PlanPageState extends State<PlanPage> {
     }
     return LayoutBuilder(
       builder: (context, constraints) {
-        final wide = constraints.maxWidth >= kTwoPaneBreakpoint;
+        // Gantt 2분할 한계치는 폴드 접힘 폭(380) 까지 허용 — AppShell 의
+        // Rail/Bar 전환 한계치(kTwoPaneBreakpoint=720) 와는 별개다.
+        final wide = constraints.maxWidth >= kGanttTwoPaneBreakpoint;
+        // 필터바 compact 여부는 **기존 720 기준**을 그대로 쓴다. breakpoint 를 낮춰
+        // 폭 400 같은 화면이 wide==true 가 됐더라도, 그 폭에서 필터바를 넓은 모드로
+        // 그리면 깨지므로 "2분할 여부" 와 "필터바 compact 여부" 를 분리한다.
+        final wideForFilter = constraints.maxWidth >= kTwoPaneBreakpoint;
         final visibility = _visibility;
         return Column(
           children: [
@@ -275,7 +281,7 @@ class _PlanPageState extends State<PlanPage> {
               child: FilterBar(
                 store: _store,
                 value: _filter,
-                compact: !wide,
+                compact: !wideForFilter,
                 onChanged: (f) => setState(() => _filter = f),
               ),
             ),
@@ -285,7 +291,7 @@ class _PlanPageState extends State<PlanPage> {
                   : Listener(
                       onPointerSignal: _onPointerSignal,
                       child: wide
-                          ? _twoPane(context, visibility)
+                          ? _twoPane(context, visibility, constraints.maxWidth)
                           : _narrowPane(context, visibility),
                     ),
             ),
@@ -295,7 +301,26 @@ class _PlanPageState extends State<PlanPage> {
     );
   }
 
-  Widget _twoPane(BuildContext context, FilterVisibility visibility) {
+  /// 좁은 화면에서 트리 폭이 타임라인을 다 잠식먹지 않도록 화면 폭 비율로 상한을 건다.
+  /// 자세한 사유는 `_twoPane` 의 호출부 주석 참고.
+  double _effectiveTreePaneWidth(double viewWidth) {
+    final configured = clampTreePaneWidth(_store.settings.treePaneWidth);
+    final proportional = viewWidth * 0.45;
+    final capped = configured < proportional ? configured : proportional;
+    // kMinTreePaneWidth(160) 밑으로는, 그게 화면 감당 가능한 범위일 때만 내려간다.
+    // 화면폭*0.45 자체가 160 미만인 극단적 좁은 화면에서는 비율값을 그대로 쓴다
+    // (최소값을 강제하면 타임라인이 사라진다).
+    if (capped < kMinTreePaneWidth && proportional < kMinTreePaneWidth) {
+      return proportional;
+    }
+    if (capped < kMinTreePaneWidth) {
+      return kMinTreePaneWidth;
+    }
+    return capped;
+  }
+
+  Widget _twoPane(
+      BuildContext context, FilterVisibility visibility, double viewWidth) {
     final rows = flattenVisibleRows(
       _store.tree,
       // 필터가 비어있으면 visibleIds=null 로 넘겨야 한다 — flattenVisibleRows 는
@@ -319,7 +344,16 @@ class _PlanPageState extends State<PlanPage> {
           child: Row(
             children: [
               SizedBox(
-                width: clampTreePaneWidth(_store.settings.treePaneWidth),
+                // 트리 폭: 설정값(범위 보정) 을 화면 폭의 45% 로 상한을 건다.
+                // 폭 400 화면에서 설정값 300 을 그대로 쓰면 타임라인이 100밖에 안
+                // 남으므로. 단 화면이 매우 좁아 화면폭*0.45 < 160(최소 폭) 인 극단적
+                // 경우에는 최소값을 강제하지 않고 화면폭*0.45 를 그대로 쓴다 — 최소값을
+                // 밀어넣으면 타임라인이 사라진다. 즉 상한만 화면 비율로 걸고 하한은
+                // 화면이 감당 가능할 때만 건다.
+                //
+                // 넓은 화면(태블릿/Windows) 에서는 화면폭*0.45 가 설정값보다 크므로
+                // 설정값이 그대로 쓰여 기존 동작이 유지된다.
+                width: _effectiveTreePaneWidth(viewWidth),
                 child: TreePanel(
                   tree: _store.tree,
                   rows: rows,
