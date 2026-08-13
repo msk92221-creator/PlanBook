@@ -62,10 +62,10 @@ class GanttTimeline extends StatefulWidget {
   /// 현재 강조(선택) 표시할 노드 id(Today/Calendar/검색에서 넘어올 때 등).
   final String? selectedNodeId;
 
-  /// **핀치 / Ctrl+휠 로 줌 단계가 바뀌었을 때** 호출. [PlanPage] 가 줌 상태를
-  /// 소유하고 있으므로, 여기서는 새 줌을 알려주기만 한다(상태를 직접 바꾸지 않는다).
+  /// **핀치 / Ctrl+휠 로 축척이 바뀌었을 때** 호출. 값은 새 "하루 픽셀 폭"(연속값).
+  /// [PlanPage] 가 줌 상태를 소유하므로 여기서는 알려주기만 한다.
   /// null 이면(단독 테스트 등) 핀치/휠 줌이 비활성이다.
-  final ValueChanged<GanttZoomLevel>? onZoomChange;
+  final ValueChanged<double>? onDayWidthChange;
 
   const GanttTimeline({
     super.key,
@@ -77,7 +77,7 @@ class GanttTimeline extends StatefulWidget {
     this.horizontalController,
     this.store,
     this.selectedNodeId,
-    this.onZoomChange,
+    this.onDayWidthChange,
   });
 
   @override
@@ -102,13 +102,16 @@ class _GanttTimelineState extends State<GanttTimeline> {
   /// 두 포인터 사이 거리. 여기서부터 배율을 재서 임계값을 넘으면 한 단계씩 바꾼다.
   double? _pinchBaseDistance;
 
+  /// 핀치 시작 시점의 하루 폭. 여기에 손가락 간격 배율을 곱해 새 폭을 만든다.
+  double? _pinchBaseDayWidth;
+
 
   /// 줌이 바뀐 뒤 적용할 가로 스크롤 오프셋 보정 정보.
   /// (핀치/휠 중심의 날짜, 그 중심의 뷰 로컬 x).
   /// 줌 변경 → [PlanPage] 가 metrics 를 새로 계산해 rebuild → [didUpdateWidget] 에서
   /// 새 metrics 기준으로 보정을 적용한다(동기적으론 새 metrics 가 아직 없다).
   ({PlanDate focalDate, double focalLocalX})? _pendingScroll;
-  GanttZoomLevel? _pendingFromZoom;
+  double? _pendingFromDayWidth;
 
   ScrollController? get _hCtrl => widget.horizontalController;
 
@@ -118,10 +121,10 @@ class _GanttTimelineState extends State<GanttTimeline> {
     // 줌이 실제로 바뀌어 새 metrics 가 들어왔으면, 보류 중이던 스크롤 보정을 적용한다.
     final pending = _pendingScroll;
     if (pending != null &&
-        _pendingFromZoom != null &&
-        widget.metrics.zoom != _pendingFromZoom) {
+        _pendingFromDayWidth != null &&
+        widget.metrics.dayWidth != _pendingFromDayWidth) {
       _pendingScroll = null;
-      _pendingFromZoom = null;
+      _pendingFromDayWidth = null;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
         _applyScrollCorrection(pending.focalDate, pending.focalLocalX);
@@ -158,6 +161,7 @@ class _GanttTimelineState extends State<GanttTimeline> {
     // 두 번째 손가락이 닿으면 핀치 기준 거리를 잡는다.
     if (_pointers.length == 2) {
       _pinchBaseDistance = _currentPairDistance();
+      _pinchBaseDayWidth = widget.metrics.dayWidth;
     }
   }
 
@@ -172,51 +176,56 @@ class _GanttTimelineState extends State<GanttTimeline> {
     if (_pointers.length >= 2) {
       // 기준 거리가 없으면(취소로 날아갔거나 down 을 놓쳤을 때) 지금 다시 잡는다.
       _pinchBaseDistance ??= _currentPairDistance();
+      _pinchBaseDayWidth ??= widget.metrics.dayWidth;
       _evaluatePinch();
     }
   }
 
   void _onPointerUp(PointerUpEvent event) {
     _pointers.remove(event.pointer);
-    if (_pointers.length < 2) _pinchBaseDistance = null;
+    if (_pointers.length < 2) {
+      _pinchBaseDistance = null;
+      _pinchBaseDayWidth = null;
+    }
   }
 
   void _onPointerCancel(PointerCancelEvent event) {
     _pointers.remove(event.pointer);
-    if (_pointers.length < 2) _pinchBaseDistance = null;
+    if (_pointers.length < 2) {
+      _pinchBaseDistance = null;
+      _pinchBaseDayWidth = null;
+    }
   }
 
-  /// 현재 두 손가락 거리의 배율을 기준 거리와 비교해 한 단계 줌을 바꾼다.
+  /// 두 손가락 거리의 배율만큼 하루 폭을 **연속적으로** 바꾼다.
+  ///
+  /// 예전에는 임계값(1.18배)을 넘을 때마다 고정 단계를 하나씩 건너뛰었다. 그러면
+  /// 손가락을 조금씩 움직이는 동안 아무 반응이 없다가 갑자기 축척이 확 바뀌어
+  /// 뚝뚝 끊겼다. 이제 배율을 그대로 폭에 곱해서 손가락을 따라 부드럽게 변한다
+  /// (주식 차트의 확대/축소와 같은 방식).
   void _evaluatePinch() {
     final base = _pinchBaseDistance;
+    final baseWidth = _pinchBaseDayWidth;
     final cur = _currentPairDistance();
-    if (base == null || cur == null || base <= 0) return;
+    if (base == null || baseWidth == null || cur == null || base <= 0) return;
 
-    final ratio = cur / base;
-    GanttZoomLevel? next;
-    if (ratio >= kPinchZoomInRatio) {
-      next = _zoomIn(widget.metrics.zoom);
-    } else if (ratio <= kPinchZoomOutRatio) {
-      next = _zoomOut(widget.metrics.zoom);
-    }
-    if (next == null) return; // 경계 밖이거나 임계값 미달 → 아무것도 안 함.
+    final target =
+        (baseWidth * (cur / base)).clamp(kMinDayWidth, kMaxDayWidth);
+    // 이미 한계에 붙어 있으면 더 요청하지 않는다(불필요한 rebuild 방지).
+    if ((target - widget.metrics.dayWidth).abs() < 0.001) return;
 
-    // 한 단계 바뀌었으니 기준 거리를 현재 거리로 리셋. 이래야 한 번의 핀치 동작이
-    // 여러 단계를 순식간에 건너뛰지 않는다(손가락을 더 벌려야 다음 단계로 간다).
-    _pinchBaseDistance = cur;
-    final focal = _pinchFocalLocal();
-    _requestZoom(next, focal.dx);
+    _requestDayWidth(target, _pinchFocalLocal().dx);
   }
 
-  /// [newZoom] 으로 줌을 바꾸도록 [PlanPage] 에 알리고, 줌 후 스크롤 보정을 예약.
-  void _requestZoom(GanttZoomLevel newZoom, double focalLocalX) {
-    if (widget.onZoomChange == null) return; // 단독 테스트 등: 줌 변경 불가.
+  /// [newDayWidth] 로 축척을 바꾸도록 [PlanPage] 에 알리고, 줌 후 스크롤 보정을 예약.
+  void _requestDayWidth(double newDayWidth, double focalLocalX) {
+    if (widget.onDayWidthChange == null) return; // 단독 테스트 등: 줌 변경 불가.
     final offset = (_hCtrl?.hasClients ?? false) ? _hCtrl!.offset : 0.0;
     // 핀치/휠 중심이 가리키는 날짜(현재 metrics + 현재 스크롤 오프셋 기준).
     final focalDate = widget.metrics.dayColumnForX(offset + focalLocalX);
     _pendingScroll = (focalDate: focalDate, focalLocalX: focalLocalX);
-    _pendingFromZoom = widget.metrics.zoom;
-    widget.onZoomChange!(newZoom);
+    _pendingFromDayWidth = widget.metrics.dayWidth;
+    widget.onDayWidthChange!(newDayWidth);
   }
 
   /// 줌 변경 후 새 metrics 로, 보고 있던 날짜가 같은 화면 위치에 오도록 보정.
@@ -227,21 +236,20 @@ class _GanttTimelineState extends State<GanttTimeline> {
     ctrl.jumpTo(newX.clamp(0.0, ctrl.position.maxScrollExtent));
   }
 
-  /// 데스크톱(Windows 등) 에서 **Ctrl + 마우스 휠** 로 줌. 핀치가 없는 환경에서
-  /// 같은 3단계 줌을 오가게 한다. Ctrl 을 누르지 않은 일반 휠은 여기서 아무것도
-  /// 하지 않는다 — 세로/shift+가로 스크롤은 각 스크롤러의 기존 동작에 맡긴다.
+  /// 데스크톱(Windows 등) 에서 **Ctrl + 마우스 휠** 로 줌. 핀치가 없는 환경을 위한 것.
+  /// 한 노치당 [kWheelZoomStep] 배씩 곱해 부드럽게 확대/축소한다.
+  /// Ctrl 을 누르지 않은 일반 휠은 여기서 아무것도 하지 않는다 — 세로/가로 스크롤은
+  /// 각 스크롤러의 기존 동작에 맡긴다.
   void _onPointerSignal(PointerSignalEvent event) {
     if (event is! PointerScrollEvent) return;
-    final ctrl = HardwareKeyboard.instance.isControlPressed;
-    if (!ctrl) return;
+    if (!HardwareKeyboard.instance.isControlPressed) return;
     // Ctrl+휠 위 = 확대, 아래 = 축소.
-    final down = event.scrollDelta.dy > 0;
-    final next = down
-        ? _zoomOut(widget.metrics.zoom)
-        : _zoomIn(widget.metrics.zoom);
-    if (next == null) return; // 이미 경계면이면 아무것도 안 함.
-    final focal = _localOf(event.position);
-    _requestZoom(next, focal.dx);
+    final zoomIn = event.scrollDelta.dy < 0;
+    final factor = zoomIn ? kWheelZoomStep : 1 / kWheelZoomStep;
+    final target =
+        (widget.metrics.dayWidth * factor).clamp(kMinDayWidth, kMaxDayWidth);
+    if ((target - widget.metrics.dayWidth).abs() < 0.001) return;
+    _requestDayWidth(target, _localOf(event.position).dx);
   }
 
   @override
@@ -329,45 +337,9 @@ class _GanttTimelineState extends State<GanttTimeline> {
   }
 }
 
-/// 핀치 줌 임계값. 기준 거리 대비 배율이 이 값을 넘으면 한 단계 확대한다.
-/// 1.4 배로 잡는다(요구사항 예시). 축소는 이 값의 역수(1/1.4) 밑으로 내려가야 한다.
-/// 1.4 배는 폰에서 너무 빡빡하다 — 손가락을 이미 벌린 채로 시작하면 화면 폭
-/// 때문에 물리적으로 1.4 배까지 못 벌린다(예: 400px 화면에서 200px 로 시작하면
-/// 280px 까지 벌려야 하는데 여유가 거의 없다). 1.18 배로 낮춘다.
-const double kPinchZoomInRatio = 1.18;
-const double kPinchZoomOutRatio = 1.0 / 1.18;
-
-/// [z] 에서 한 단계 더 확대(month → week → day). 이미 day 면 null(변화 없음).
-GanttZoomLevel? _zoomIn(GanttZoomLevel z) {
-  switch (z) {
-    case GanttZoomLevel.year:
-      return GanttZoomLevel.quarter;
-    case GanttZoomLevel.quarter:
-      return GanttZoomLevel.month;
-    case GanttZoomLevel.month:
-      return GanttZoomLevel.week;
-    case GanttZoomLevel.week:
-      return GanttZoomLevel.day;
-    case GanttZoomLevel.day:
-      return null; // 최대 확대. 더 벌려도 그대로.
-  }
-}
-
-/// [z] 에서 한 단계 더 축소(day → week → month). 이미 month 면 null(변화 없음).
-GanttZoomLevel? _zoomOut(GanttZoomLevel z) {
-  switch (z) {
-    case GanttZoomLevel.day:
-      return GanttZoomLevel.week;
-    case GanttZoomLevel.week:
-      return GanttZoomLevel.month;
-    case GanttZoomLevel.month:
-      return GanttZoomLevel.quarter;
-    case GanttZoomLevel.quarter:
-      return GanttZoomLevel.year;
-    case GanttZoomLevel.year:
-      return null; // 최대 축소. 더 좁혀도 그대로.
-  }
-}
+/// Ctrl+휠 한 노치당 축척 배율. 1.15 배씩이면 대여섯 번 굴려 한 단계 정도 이동해
+/// 뚝뚝 끊기지 않는다.
+const double kWheelZoomStep = 1.15;
 
 // ---------------------------------------------------------------------------
 // 헤더
@@ -463,10 +435,14 @@ class _HeaderPainter extends CustomPainter {
         textDirection: TextDirection.ltr,
         textAlign: TextAlign.center,
       )..layout();
-      final tx = (c.x + c.width / 2 - painter.width / 2).clamp(
-        2.0,
-        size.width - painter.width - 2,
-      );
+      // 칸보다 라벨이 넓으면 아예 그리지 않는다. 억지로 그리면 옆 칸 라벨과 겹쳐
+      // 글자가 뭉개지기만 한다(축소할수록 눈금이 촘촘해지므로 실제로 자주 생긴다).
+      if (painter.width > c.width - 2) continue;
+      // clamp 는 하한 > 상한이면 예외를 던진다. 전체 폭이 라벨보다도 좁은 극단적
+      // 축소에서는 상한이 하한보다 작아지므로, 그 경우 중앙 정렬만 하고 넘어간다.
+      final maxTx = size.width - painter.width - 2;
+      final centered = c.x + c.width / 2 - painter.width / 2;
+      final tx = maxTx <= 2.0 ? centered : centered.clamp(2.0, maxTx);
       final ty = (size.height - painter.height) / 2;
       painter.paint(canvas, Offset(tx, ty));
 

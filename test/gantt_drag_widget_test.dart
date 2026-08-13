@@ -39,7 +39,6 @@ final _metrics = GanttMetrics(
   firstDay: PlanDate(2026, 1, 1),
   lastDay: PlanDate(2026, 3, 1),
   dayWidth: 40.0,
-  zoom: GanttZoomLevel.day,
 );
 
 /// [GanttTimeline] 을 고정 크기로 pump 한다. 반환값은 위젯의 화면상 top-left
@@ -351,7 +350,6 @@ void main() {
           firstDay: PlanDate(2026, 1, 1),
           lastDay: PlanDate(2026, 3, 1),
           dayWidth: zoom.dayWidth,
-          zoom: zoom,
         );
         tester.view.physicalSize = const Size(1400, 600);
         tester.view.devicePixelRatio = 1.0;

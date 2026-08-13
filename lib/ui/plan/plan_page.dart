@@ -54,7 +54,9 @@ enum _NarrowView { tree, timeline }
 class _PlanPageState extends State<PlanPage> {
   PlanStore get _store => widget.store;
 
-  GanttZoomLevel _zoom = GanttZoomLevel.week;
+  /// 하루의 픽셀 폭. **연속값**이다 — 핀치하면 손가락 간격에 비례해 부드럽게 바뀐다.
+  /// 헤더 눈금 단위(일/주/월/분기/년)는 이 값에서 자동으로 파생된다.
+  double _dayWidth = GanttZoomLevel.week.dayWidth;
   _NarrowView _narrowView = _NarrowView.tree;
 
   /// 상단 고급 필터. 화면 상태로만 유지한다(AppShell 이 IndexedStack 으로
@@ -72,7 +74,8 @@ class _PlanPageState extends State<PlanPage> {
   // 타임라인 가로 스크롤.
   final ScrollController _hCtrl = ScrollController();
   bool _didInitialTodayScroll = false;
-  GanttZoomLevel? _lastZoomForScroll;
+  /// 마지막으로 "오늘 위치로 스크롤" 을 적용했을 때의 하루 폭.
+  double? _lastZoomForScroll;
   // 창 크기 변경 시 "오늘" 위치 재보정을 위해 이전 폭 기억.
   double? _lastViewWidth;
 
@@ -153,10 +156,11 @@ class _PlanPageState extends State<PlanPage> {
   /// 스크롤 오프셋을 보정한다. 핀치 중에 화면이 "오늘" 로 점프하면 매우 어색하므로.
   ///
   /// **[preserveScroll]==false(상단 버튼)**: 기존 동작("오늘" 로 스크롤) 을 유지.
-  void _setZoom(GanttZoomLevel z, {required bool preserveScroll}) {
-    if (z == _zoom) return;
+  void _setZoom(double w, {required bool preserveScroll}) {
+    final z = w.clamp(kMinDayWidth, kMaxDayWidth);
+    if (z == _dayWidth) return;
     setState(() {
-      _zoom = z;
+      _dayWidth = z;
       if (!preserveScroll) {
         _didInitialTodayScroll = false;
         _lastZoomForScroll = null;
@@ -218,7 +222,7 @@ class _PlanPageState extends State<PlanPage> {
         title: const Text('PlanBook'),
         actions: [
           _ZoomSelector(
-            value: _zoom,
+            value: _dayWidth,
             // 버튼으로 줌을 바꿀 때는 기존 동작("오늘" 위치로 스크롤) 을 그대로 유지.
             onChanged: (z) => _setZoom(z, preserveScroll: false),
           ),
@@ -304,7 +308,7 @@ class _PlanPageState extends State<PlanPage> {
     final metrics = computeGanttMetrics(
       visibleNodes:
           _store.tree.allNodes.where((n) => visibility.visibleIds.contains(n.id)),
-      zoom: _zoom,
+      dayWidth: _dayWidth,
       today: _store.today,
     );
     _scheduleInitialScroll(metrics, rows);
@@ -341,7 +345,8 @@ class _PlanPageState extends State<PlanPage> {
                   horizontalController: _hCtrl,
                   store: _store,
                   selectedNodeId: _selectedNodeId,
-                  onZoomChange: (z) => _setZoom(z, preserveScroll: true),
+                  onDayWidthChange: (w) =>
+                      _setZoom(w, preserveScroll: true),
                 ),
               ),
             ],
@@ -361,7 +366,7 @@ class _PlanPageState extends State<PlanPage> {
     final metrics = computeGanttMetrics(
       visibleNodes:
           _store.tree.allNodes.where((n) => visibility.visibleIds.contains(n.id)),
-      zoom: _zoom,
+      dayWidth: _dayWidth,
       today: _store.today,
     );
     _scheduleInitialScroll(metrics, rows);
@@ -410,7 +415,8 @@ class _PlanPageState extends State<PlanPage> {
                   horizontalController: _hCtrl,
                   store: _store,
                   selectedNodeId: _selectedNodeId,
-                  onZoomChange: (z) => _setZoom(z, preserveScroll: true),
+                  onDayWidthChange: (w) =>
+                      _setZoom(w, preserveScroll: true),
                 ),
         ),
       ],
@@ -445,17 +451,17 @@ class _PlanPageState extends State<PlanPage> {
       final needsRecenter = (_lastViewWidth != null &&
           (_lastViewWidth! - viewWidth).abs() > 1 &&
           _didInitialTodayScroll &&
-          _lastZoomForScroll == _zoom);
+          _lastZoomForScroll == _dayWidth);
       _lastViewWidth = viewWidth;
 
-      if (!_didInitialTodayScroll || _lastZoomForScroll != _zoom) {
+      if (!_didInitialTodayScroll || _lastZoomForScroll != _dayWidth) {
         final target = (targetX - viewWidth / 2).clamp(
           0.0,
           _hCtrl.position.maxScrollExtent,
         );
         _hCtrl.jumpTo(target);
         _didInitialTodayScroll = true;
-        _lastZoomForScroll = _zoom;
+        _lastZoomForScroll = _dayWidth;
         return;
       }
       if (needsRecenter) {
@@ -558,22 +564,28 @@ class _PlanPageState extends State<PlanPage> {
 // ---------------------------------------------------------------------------
 
 class _ZoomSelector extends StatelessWidget {
-  final GanttZoomLevel value;
-  final ValueChanged<GanttZoomLevel> onChanged;
+  /// 현재 하루 픽셀 폭(연속값).
+  final double value;
+
+  /// 프리셋을 고르면 그 폭으로 이동한다.
+  final ValueChanged<double> onChanged;
 
   const _ZoomSelector({required this.value, required this.onChanged});
 
+  /// 현재 축척이 속한 눈금 단계. 연속 줌이라 정확히 프리셋 값일 필요는 없고,
+  /// "지금 어느 굵기로 보고 있는가" 를 표시하는 용도다.
+  GanttZoomLevel get _current => GanttZoomLevel.forDayWidth(value);
+
   @override
   Widget build(BuildContext context) {
-    // 줌 단계가 5개(일/주/월/분기/년)로 늘면서 폰 화면에서는 버튼을 다 늘어놓을
-    // 폭이 안 나온다(앱바에 아이콘 버튼도 5개 있다). 좁은 화면에서는 현재 단계만
-    // 보여주는 드롭다운으로 접고, 넓은 화면에서만 버튼을 전부 펼친다.
+    // 폰 화면에는 버튼 5개를 늘어놓을 폭이 없다(앱바에 아이콘 버튼도 5개).
+    // 좁은 화면에서는 현재 단계만 보여주는 드롭다운으로 접는다.
     final isWide = MediaQuery.sizeOf(context).width >= kTwoPaneBreakpoint;
     if (!isWide) {
       return PopupMenuButton<GanttZoomLevel>(
         tooltip: '확대/축소 단계',
-        initialValue: value,
-        onSelected: onChanged,
+        initialValue: _current,
+        onSelected: (z) => onChanged(z.dayWidth),
         itemBuilder: (context) => [
           for (final z in GanttZoomLevel.values)
             PopupMenuItem(value: z, child: Text(z.label)),
@@ -583,7 +595,7 @@ class _ZoomSelector extends StatelessWidget {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(value.label),
+              Text(_current.label),
               const Icon(Icons.arrow_drop_down, size: 20),
             ],
           ),
@@ -593,8 +605,9 @@ class _ZoomSelector extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 8),
       child: ToggleButtons(
-        isSelected: GanttZoomLevel.values.map((z) => z == value).toList(),
-        onPressed: (i) => onChanged(GanttZoomLevel.values[i]),
+        isSelected:
+            GanttZoomLevel.values.map((z) => z == _current).toList(),
+        onPressed: (i) => onChanged(GanttZoomLevel.values[i].dayWidth),
         constraints: const BoxConstraints(minHeight: 36, minWidth: 40),
         borderRadius: BorderRadius.circular(8),
         children: [

@@ -16,45 +16,78 @@ library;
 import '../../core/date/plan_date.dart';
 import '../../domain/plan_node.dart';
 
-/// 줌(확대/축소) 단위. 줌 레벨마다 하루의 픽셀 폭([dayWidth])이 다르다.
+/// 확대/축소의 하한/상한(하루의 픽셀 폭).
 ///
-/// - [day]: 일 단위. 날짜별 눈금 + 요일 표시. 주말 배경색 구분.
-/// - [week]: 주 단위. 월요일(주 시작)마다 눈금.
-/// - [month]: 월 단위. 월 경계(1일)마다 눈금.
+/// 줌은 **연속적**이다 — 주식 차트처럼 손가락 간격에 비례해 부드럽게 바뀌고,
+/// 눈금 단위(일/주/월/분기/년)는 그 축척에서 자동으로 골라진다([GanttZoomLevel.forDayWidth]).
+/// 예전처럼 몇 개의 고정 단계를 건너뛰지 않는다.
+///
+/// - 최소 0.25px/일 → 한 화면(400px)에 약 4년 반.
+/// - 최대 64px/일 → 하루 칸이 넉넉히 보이는 최대 확대.
+const double kMinDayWidth = 0.25;
+const double kMaxDayWidth = 64.0;
+
+/// 하루 폭이 이 값보다 좁으면 **간략 모드**로 그린다.
+///
+/// 이 축척에서는 막대 하나가 몇 픽셀에 불과하다. 거기에 진행률 분할·테두리·라벨·
+/// 마일스톤 마름모까지 전부 그리면 형체를 알아볼 수 없는 픽셀 덩어리가 되고, 정작
+/// 알고 싶은 "언제 무엇이 몰려 있는가" 가 안 보인다. 그래서 막대를 단색 한 덩어리로만
+/// 그리고 잔가지 장식은 생략한다.
+///
+/// 드래그도 막는다 — 하루가 2px 도 안 되면 제스처 슬롭(1px 남짓) 만으로 하루 이상
+/// 밀려서 날짜를 정확히 바꿀 수 없다. 편집은 확대해서 하는 것이 맞다.
+const double kCompactDayWidth = 2.0;
+
+/// 헤더 눈금 단위. **줌 단계가 아니라, 현재 축척에서 자동으로 고르는 눈금 굵기**다.
+///
+/// 주식 차트가 확대 정도에 따라 분봉→일봉→주봉→월봉으로 바뀌는 것과 같은 개념이다.
+/// [dayWidth] 는 확대/축소 버튼이 한 번에 이동할 **프리셋 폭**으로만 쓰인다.
+///
+/// - [day]: 날짜별 눈금 + 요일 표시. 주말 배경색 구분.
+/// - [week]: 주 시작(월요일)마다 눈금.
+/// - [month]: 월 경계(1일)마다 눈금.
+/// - [quarter]: 분기(1/4/7/10월)마다 눈금.
+/// - [year]: 연 경계마다 눈금.
 enum GanttZoomLevel {
-  /// 일 단위. 하루 = 40px.
-  day(40.0, '일'),
+  /// 일 눈금. 프리셋 40px/일.
+  day(40.0, '일', 20.0),
 
-  /// 주 단위. 하루 = 18px (1주 ≈ 126px).
-  week(18.0, '주'),
+  /// 주 눈금. 프리셋 18px/일 (1주 ≈ 126px).
+  week(18.0, '주', 7.0),
 
-  /// 월 단위. 하루 = 5px (1달 ≈ 150px).
-  month(5.0, '월'),
+  /// 월 눈금. 프리셋 5px/일 (1달 ≈ 150px).
+  month(5.0, '월', 2.0),
 
-  /// 분기 단위. 하루 = 1.8px (1분기 ≈ 164px). 폰 화면에 1년 반 정도가 들어온다.
-  quarter(1.8, '분기'),
+  /// 분기 눈금. 프리셋 1.4px/일 (1분기 ≈ 128px).
+  quarter(1.4, '분기', 0.8),
 
-  /// 연 단위. 하루 = 0.6px (1년 ≈ 219px). 여러 해에 걸친 계획을 한눈에 본다.
-  year(0.6, '년');
+  /// 연 눈금. 프리셋 0.6px/일 (1년 ≈ 219px).
+  year(0.6, '년', 0.0);
 
-  /// 줌 레벨에서의 하루 픽셀 폭.
+  /// 확대/축소 선택 버튼이 이 단계로 이동할 때 쓰는 하루 픽셀 폭(프리셋).
   final double dayWidth;
 
   /// UI 표시용 한글 라벨.
   final String label;
 
-  const GanttZoomLevel(this.dayWidth, this.label);
+  /// 이 눈금 단위가 적용되기 시작하는 최소 하루 폭(이 값 이상이면 이 단위를 쓴다).
+  final double minDayWidth;
 
-  /// **간략 모드**(하루가 2px 미만인 축척) 여부. 분기/년 단계가 해당된다.
+  const GanttZoomLevel(this.dayWidth, this.label, this.minDayWidth);
+
+  /// 현재 축척([dayWidth])에 어울리는 눈금 단위를 고른다.
   ///
-  /// 이 축척에서는 한 화면에 1년~수년이 들어오므로 막대 하나가 몇 픽셀에 불과하다.
-  /// 거기에 진행률 분할·테두리·라벨·마일스톤 마름모까지 전부 그리면 형체를 알아볼 수
-  /// 없는 픽셀 덩어리가 되고, 정작 알고 싶은 "언제 무엇이 몰려 있는가" 가 안 보인다.
-  /// 그래서 이 단계에서는 **막대를 단색 한 덩어리로만** 그리고 잔가지 장식은 생략한다.
-  ///
-  /// 드래그도 막는다 — 하루가 2px 도 안 되면 제스처 슬롭(1px 남짓) 만으로 하루 이상
-  /// 밀려서 날짜를 정확히 바꿀 수 없다. 편집은 확대해서 하는 것이 맞다.
-  bool get isCompact => dayWidth < 2.0;
+  /// 넓을수록 잘게(일), 좁을수록 굵게(년). 경계값은 각 단계의 [minDayWidth] 다.
+  static GanttZoomLevel forDayWidth(double dayWidth) {
+    for (final z in GanttZoomLevel.values) {
+      if (dayWidth >= z.minDayWidth) return z;
+    }
+    return GanttZoomLevel.year;
+  }
+
+  /// 이 **프리셋** 이 간략 모드인지. (실제 판정은 [GanttMetrics.isCompact] 를 쓴다 —
+  /// 연속 줌에서는 현재 폭이 기준이지 프리셋이 기준이 아니다.)
+  bool get isCompact => dayWidth < kCompactDayWidth;
 }
 
 /// 타임라인의 좌표계를 나타내는 불변 값 객체.
@@ -68,18 +101,21 @@ class GanttMetrics {
   /// 타임라인 마지막 날. inclusive.
   final PlanDate lastDay;
 
-  /// 하루의 픽셀 폭.
+  /// 하루의 픽셀 폭. **연속값**이다(고정 단계가 아니다).
   final double dayWidth;
-
-  /// 현재 줌 레벨.
-  final GanttZoomLevel zoom;
 
   const GanttMetrics({
     required this.firstDay,
     required this.lastDay,
     required this.dayWidth,
-    required this.zoom,
   });
+
+  /// 현재 축척에 맞는 헤더 눈금 단위. [dayWidth] 에서 **파생**된다 —
+  /// 따로 저장하면 둘이 어긋날 수 있어 단일 진실 공급원으로 둔다.
+  GanttZoomLevel get zoom => GanttZoomLevel.forDayWidth(dayWidth);
+
+  /// 간략 모드 여부. 프리셋이 아니라 **현재 폭**이 기준이다.
+  bool get isCompact => dayWidth < kCompactDayWidth;
 
   /// 표시 일수(inclusive).
   int get dayCount => inclusiveDayCount(firstDay, lastDay);
@@ -152,7 +188,8 @@ const int kGanttPadDaysAfter = 30;
 /// 부모가 자식 기간을 포함하므로 leaf 까지 합치면 결국 전체 기간을 덮게 된다.
 GanttMetrics computeGanttMetrics({
   required Iterable<PlanNode> visibleNodes,
-  required GanttZoomLevel zoom,
+  /// 하루의 픽셀 폭(연속값). 호출부가 줌 상태로 들고 있는 값 그대로.
+  required double dayWidth,
   required PlanDate today,
   int padDaysBefore = kGanttPadDaysBefore,
   int padDaysAfter = kGanttPadDaysAfter,
@@ -202,8 +239,7 @@ GanttMetrics computeGanttMetrics({
   return GanttMetrics(
     firstDay: first,
     lastDay: last,
-    dayWidth: zoom.dayWidth,
-    zoom: zoom,
+    dayWidth: dayWidth,
   );
 }
 
