@@ -142,6 +142,12 @@ GanttMetrics computeGanttMetrics({
 }) {
   PlanDate? minStart;
   PlanDate? maxEnd;
+  // "열린 기간"(startDate 는 있고 endDate 는 미정) 노드가 하나라도 있으면
+  // Gantt 는 그 노드를 start~오늘 까지의 막대로 그린다. 이 막대가 타임라인
+  // 오른쪽 밖으로 잘려 나가지 않으려면 maxEnd 후보에 "오늘" 이 포함되어야 한다
+  // (예: 2020년에 시작한 종료 미정 항목이 maxEnd 를 2018년으로 잡아버리면
+  //  막대의 오른쪽(오늘) 부분이 화면 밖으로 삐져나간다).
+  var hasOpenEnded = false;
   for (final n in visibleNodes) {
     final s = n.startDate;
     final e = n.endDate;
@@ -153,6 +159,16 @@ GanttMetrics computeGanttMetrics({
       // e 가 현재 maxEnd 보다 이후면 갱신(더 늦은 끝).
       if (maxEnd == null || daysBetween(maxEnd, e) > 0) maxEnd = e;
     }
+    if (s != null && e == null) {
+      hasOpenEnded = true;
+    }
+  }
+  // 열린 기간 노드가 있으면 오늘도 maxEnd 후보로 편입한다.
+  // (today 를 그대로 maxEnd 로 쓰는 게 아니라 기존 maxEnd 와 비교해 더 큰 쪽을 택한다.
+  //  따라서 확정 종료일이 오늘보다 훨씬 뒤인 노드가 섞여 있으면 그 값이 우선한다.)
+  // daysBetween(a, b) == b - a 이므로 "today 가 maxEnd 보다 뒤"는 > 0 이다.
+  if (hasOpenEnded && (maxEnd == null || daysBetween(maxEnd, today) > 0)) {
+    maxEnd = today;
   }
 
   final PlanDate first;

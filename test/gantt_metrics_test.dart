@@ -261,6 +261,81 @@ void main() {
     });
   });
 
+  group('computeGanttMetrics 열린 기간(종료일 미정)', () {
+    test('열린 기간 노드가 있으면 lastDay 가 today 이후를 덮는다', () {
+      // 과거에 시작하고 종료 미정인 항목: 막대는 오늘까지 그려지므로 타임라인
+      // 끝이 오늘을 포함해야 한다(그렇지 않으면 막대 오른쪽이 잘려 나간다).
+      final today = PlanDate(2024, 8, 16);
+      final nodes = [
+        PlanNode(
+          id: 'a',
+          title: 'a',
+          startDate: PlanDate(2020, 1, 1),
+          // endDate == null (열린 기간)
+        ),
+      ];
+      final m = computeGanttMetrics(
+        visibleNodes: nodes,
+        zoom: GanttZoomLevel.day,
+        today: today,
+        padDaysBefore: 7,
+        padDaysAfter: 7,
+      );
+      // today 가 maxEnd 후보에 들어갔으므로 lastDay 는 today + padDaysAfter.
+      expect(m.containsDate(today), isTrue);
+      expect(m.lastDay, today.addDays(7));
+    });
+
+    test('확정 종료일이 today 보다 뒤면 그 값이 maxEnd 로 우선한다', () {
+      // 열린 기간 노드가 섞여 있어도, 더 먼 확정 종료일이 있으면 그쪽이 우선.
+      final today = PlanDate(2024, 8, 16);
+      final nodes = [
+        PlanNode(
+          id: 'a',
+          title: 'a',
+          startDate: PlanDate(2024, 8, 1),
+          // endDate == null (열린 기간)
+        ),
+        PlanNode(
+          id: 'b',
+          title: 'b',
+          startDate: PlanDate(2024, 8, 10),
+          endDate: PlanDate(2024, 12, 31),
+        ),
+      ];
+      final m = computeGanttMetrics(
+        visibleNodes: nodes,
+        zoom: GanttZoomLevel.day,
+        today: today,
+        padDaysBefore: 7,
+        padDaysAfter: 7,
+      );
+      // maxEnd = 2024-12-31 (today 보다 뒤). lastDay = 그것 + 7.
+      expect(m.lastDay, PlanDate(2025, 1, 7));
+    });
+
+    test('열린 기간 노드 단독이면 firstDay 는 start - padding 그대로', () {
+      final today = PlanDate(2024, 8, 16);
+      final nodes = [
+        PlanNode(
+          id: 'a',
+          title: 'a',
+          startDate: PlanDate(2024, 8, 10),
+        ),
+      ];
+      final m = computeGanttMetrics(
+        visibleNodes: nodes,
+        zoom: GanttZoomLevel.day,
+        today: today,
+        padDaysBefore: 7,
+        padDaysAfter: 7,
+      );
+      // minStart 는 start, maxEnd 는 today. first = start - 7, last = today + 7.
+      expect(m.firstDay, PlanDate(2024, 8, 3));
+      expect(m.lastDay, PlanDate(2024, 8, 23));
+    });
+  });
+
   group('헤더 셀 생성', () {
     test('일 단위: 매일 1칸, dayCount 와 일치', () {
       final m = _metrics(

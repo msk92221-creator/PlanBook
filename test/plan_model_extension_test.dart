@@ -3,11 +3,13 @@ import 'dart:io';
 
 import 'package:flutter/material.dart' show ThemeMode;
 import 'package:flutter_test/flutter_test.dart';
+import 'package:planbook/core/date/plan_date.dart';
 import 'package:planbook/data/json_plan_repository.dart';
 import 'package:planbook/data/plan_migration.dart';
 import 'package:planbook/data/plan_repository.dart';
 import 'package:planbook/data/plan_store.dart';
 import 'package:planbook/domain/app_settings.dart';
+import 'package:planbook/domain/bar_color.dart';
 import 'package:planbook/domain/plan_enums.dart';
 import 'package:planbook/domain/plan_node.dart';
 import 'package:planbook/domain/project.dart';
@@ -344,6 +346,87 @@ void main() {
       final t = store.createTag('old');
       store.updateTag(t.id, (cur) => cur.copyWith(name: 'new'));
       expect(store.tagById(t.id)!.name, 'new');
+    });
+  });
+
+  group('PlanNode.barColor', () {
+    test('기본값은 BarColor.none 이다', () {
+      const node = PlanNode(id: 'x', title: 'x');
+      expect(node.barColor, BarColor.none);
+    });
+
+    test('copyWith(barColor:) 가 색을 바꾼다', () {
+      const node = PlanNode(id: 'x', title: 'x');
+      final changed = node.copyWith(barColor: BarColor.blue);
+      expect(changed.barColor, BarColor.blue);
+      // 다른 필드는 그대로.
+      expect(changed.title, node.title);
+      expect(changed.id, node.id);
+    });
+
+    test('copyWith 로 barColor 를 넘기지 않으면 색이 보존된다', () {
+      final node = const PlanNode(id: 'x', title: 'x')
+          .copyWith(barColor: BarColor.red);
+      final retitled = node.copyWith(title: '변경');
+      expect(retitled.barColor, BarColor.red);
+    });
+
+    test('barColor 를 지정하면 toJson 에 barColor 키가 들어간다', () {
+      final node =
+          const PlanNode(id: 'x', title: 'x').copyWith(barColor: BarColor.green);
+      final json = node.toJson();
+      expect(json['barColor'], 'green');
+    });
+
+    test('barColor 가 none 이면 toJson 에 barColor 키가 없다', () {
+      const node = PlanNode(id: 'x', title: 'x');
+      expect(node.toJson().containsKey('barColor'), isFalse);
+    });
+
+    test('toJson -> fromJson 라운드트립이 색을 보존한다', () {
+      final node = const PlanNode(id: 'x', title: 'x')
+          .copyWith(barColor: BarColor.purple);
+      expect(PlanNode.fromJson(node.toJson()), node);
+    });
+
+    test('barColor 키가 없는 옛 JSON 을 읽으면 BarColor.none 이다', () {
+      final node = PlanNode.fromJson(const {
+        'id': 'legacy',
+        'title': '옛 노드',
+        // 'barColor' 키 없음.
+      });
+      expect(node.barColor, BarColor.none);
+    });
+
+    test('알 수 없는 색 이름은 예외 없이 none 으로 폴백한다', () {
+      final node = PlanNode.fromJson(const {
+        'id': 'future',
+        'title': '미래 노드',
+        'barColor': 'teal',
+      });
+      expect(node.barColor, BarColor.none);
+    });
+
+    test('copyWithClearDates 는 색을 보존한다(날짜를 지워도 색이 초기화되지 않는다)',
+        () {
+      final node = const PlanNode(id: 'x', title: 'x')
+          .copyWith(
+              barColor: BarColor.orange,
+              startDate: PlanDate(2026, 1, 1),
+              endDate: PlanDate(2026, 1, 5));
+      final cleared = node.copyWithClearDates();
+      expect(cleared.startDate, isNull);
+      expect(cleared.endDate, isNull);
+      expect(cleared.barColor, BarColor.orange);
+    });
+
+    test('서로 다른 barColor 는 동등 비교에서 다르고 hashCode 도 다르다', () {
+      final a =
+          const PlanNode(id: 'x', title: 'x').copyWith(barColor: BarColor.blue);
+      final b = a.copyWith(barColor: BarColor.red);
+      expect(a == b, isFalse);
+      expect(a.hashCode != b.hashCode, isTrue);
+      expect(a.copyWith(barColor: BarColor.blue) == a, isTrue);
     });
   });
 }

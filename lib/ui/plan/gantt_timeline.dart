@@ -25,6 +25,11 @@ import 'gantt_metrics.dart';
 import 'gantt_theme.dart';
 import 'tree_flatten.dart';
 
+/// "열린 기간"(종료일 미정) 막대의 semantics 라벨(위젯 테스트 검증용).
+/// [kDoneSemantics]/[kOnHoldSemantics] 와 같은 목적이지만, 상수 파일(gantt_theme.dart)
+/// 은 이번 변경 범위가 아니므로 같은 스타일의 로컬 상수로 여기에 둔다.
+const String kOpenEndedSemantics = '종료일 미정';
+
 /// 우측 Gantt 타임라인 패널.
 ///
 /// [verticalController] 는 좌측 트리 패널과 동기화되는 세로 스크롤 컨트롤러(외부 주입).
@@ -95,6 +100,7 @@ class GanttTimeline extends StatelessWidget {
                             metrics: metrics,
                             store: store,
                             selected: rows[i].id == selectedNodeId,
+                            today: today,
                           ),
                         ),
                       ),
@@ -376,12 +382,18 @@ class _TimelineRow extends StatelessWidget {
   final GanttMetrics metrics;
   final PlanStore? store;
   final bool selected;
+
+  /// "오늘". 열린 기간(종료일 미정) 노드의 막대를 "오늘"까지 그리기 위해 쓴다.
+  /// 위젯 안에서 DateTime.now() 로 직접 만들지 않고 [GanttTimeline] 으로부터
+  /// 주입받는다(테스트에서 날짜를 고정할 수 있어야 한다).
+  final PlanDate today;
   const _TimelineRow({
     required this.row,
     required this.tree,
     required this.metrics,
     this.store,
     this.selected = false,
+    required this.today,
   });
 
   @override
@@ -443,6 +455,69 @@ class _TimelineRow extends StatelessWidget {
     // (마일스톤 자기 행은 위쪽 분기에서 이미 처리됐으므로 여기 오지 않는다)
     final descendantMilestones = collectDescendantMilestones(tree, node.id);
 
+    // **열린 기간**(시작일은 있고 종료일이 미정) 인가?
+    // leaf 노드는 startDate 만 있을 때, rollup 요약은 자식들로부터 계산된
+    // endDate 가 없을 때(start 는 있음) 열린 기간으로 본다. 이때 막대를
+    // start~오늘 까지 그린다(단 오늘이 start 이전이면 start 당일 하루치만).
+    // 단, 시작만 미정이고 종료만 있는 경우는 이번 작업 범위가 아니므로 그대로
+    // "날짜 미정" 라벨을 유지한다.
+    final isOpenEnded = effectiveStart != null && effectiveEnd == null;
+
+    Widget barChild;
+    if (effectiveStart != null && effectiveEnd != null) {
+      barChild = _GanttBar(
+        // 막대를 테스트에서 좌표로 집어내기 위한 키. semantics 라벨로 찾으면
+        // 막대 안쪽 제목 Text 의 semantics 가 병합되어 엉뚱한 상위 노드가
+        // 잡히므로(그 노드의 사각형은 행 전체다) 키로 찾는 편이 정확하다.
+        key: ValueKey('gantt-bar-${node.id}'),
+        metrics: metrics,
+        start: effectiveStart,
+        end: effectiveEnd,
+        progress: effectiveProgress,
+        done: isDone,
+        // 요약(rollup) bar 는 기존 2상태(완료/미완료) 유지 — status 는
+        // leaf(또는 autoRollup=false) 노드에서만 4상태로 표시한다.
+        status: isParentSummary ? null : node.status,
+        isSummary: isParentSummary,
+        title: node.title,
+        nodeId: node.id,
+        // 드래그는 노드 원본 기간 기준(rollup 요약은 드래그 대상 아님).
+        // (canDragDate 와 !isSummary 는 store!=null 여부만 다를 뿐 동일한 정책.
+        //  _GanttBar 내부의 _canDrag 가 이미 이 판단을 하므로 그대로 둔다.)
+        draggableStart: node.startDate,
+        draggableEnd: node.endDate,
+        store: store,
+      );
+    } else if (isOpenEnded) {
+      // 열린 기간 막대: start~오늘 (오늘이 start 이전이면 start 하루치만).
+      // 오른쪽 끝은 사용자가 저장한 값이 아니라 "오늘"이라는 계산값이므로 드래그/
+      // 리사이즈를 막는다(store 를 넘기지 않는다 → 어떤 날짜도 커밋되지 않는다).
+      final openEnd = daysBetween(effectiveStart, today) >= 0
+          ? today
+          : effectiveStart;
+      barChild = _GanttBar(
+        key: ValueKey('gantt-bar-${node.id}'),
+        metrics: metrics,
+        start: effectiveStart,
+        end: openEnd,
+        progress: effectiveProgress,
+        done: isDone,
+        status: isParentSummary ? null : node.status,
+        isSummary: isParentSummary,
+        title: node.title,
+        nodeId: node.id,
+        // 노드 원본 기간(rollup 요약이면 null 일 수 있음)을 그대로 전달하되,
+        // store 를 넘기지 않고 [openEnded]==true 이므로 _canDrag 가 false 가 되어
+        // 어떤 날짜도 커밋되지 않는다(오른쪽 끝은 "오늘"이라는 계산값이므로 드래그 금지).
+        draggableStart: node.startDate,
+        draggableEnd: node.endDate,
+        openEnded: true,
+        store: null,
+      );
+    } else {
+      barChild = const _NoDateLabel();
+    }
+
     return _rowFrame(
       context,
       overlays: [
@@ -453,27 +528,7 @@ class _TimelineRow extends StatelessWidget {
             info: m,
           ),
       ],
-      child: (effectiveStart != null && effectiveEnd != null)
-          ? _GanttBar(
-              metrics: metrics,
-              start: effectiveStart,
-              end: effectiveEnd,
-              progress: effectiveProgress,
-              done: isDone,
-              // 요약(rollup) bar 는 기존 2상태(완료/미완료) 유지 — status 는
-              // leaf(또는 autoRollup=false) 노드에서만 4상태로 표시한다.
-              status: isParentSummary ? null : node.status,
-              isSummary: isParentSummary,
-              title: node.title,
-              nodeId: node.id,
-              // 드래그는 노드 원본 기간 기준(rollup 요약은 드래그 대상 아님).
-              // (canDragDate 와 !isSummary 는 store!=null 여부만 다를 뿐 동일한 정책.
-              //  _GanttBar 내부의 _canDrag 가 이미 이 판단을 하므로 그대로 둔다.)
-              draggableStart: node.startDate,
-              draggableEnd: node.endDate,
-              store: store,
-            )
-          : const _NoDateLabel(),
+      child: barChild,
     );
   }
 
@@ -753,9 +808,21 @@ class _GanttBar extends StatefulWidget {
   final PlanDate? draggableStart;
   final PlanDate? draggableEnd;
 
+  /// **열린 기간**(종료일 미정) 막대인지.
+  ///
+  /// true 면 오른쪽 끝이 사용자가 저장한 종료일이 아니라 "오늘"이라는 계산값이므로,
+  /// - 오른쪽 끝이 확정된 종료일이 아님을 시각적으로 드러내기 위해 알파 그라데이션
+  ///   (오른쪽으로 갈수록 투명)을 입힌다.
+  /// - 드래그/리사이즈를 아예 비활성화한다(끝을 끌면 사용자가 입력한 적 없는
+  ///   endDate 가 조용히 저장되어 버린다). [store] 가 null 로 넘어오는 것과
+  ///   [_canDrag] 가 false 인 것으로 이중 보장한다.
+  /// - Semantics 라벨에 [kOpenEndedSemantics] 문구를 포함한다.
+  final bool openEnded;
+
   final PlanStore? store;
 
   const _GanttBar({
+    super.key,
     required this.metrics,
     required this.start,
     required this.end,
@@ -767,6 +834,7 @@ class _GanttBar extends StatefulWidget {
     required this.nodeId,
     required this.draggableStart,
     required this.draggableEnd,
+    this.openEnded = false,
     this.store,
   });
 
@@ -806,6 +874,7 @@ class _GanttBarState extends State<_GanttBar> {
   bool get _canDrag =>
       widget.store != null &&
       !widget.isSummary && // rollup 요약 바는 드래그 제외
+      !widget.openEnded && // 열린 기간(오늘로 계산된 끝) 은 드래그/리사이즈 제외
       widget.draggableStart != null &&
       widget.draggableEnd != null;
 
@@ -930,7 +999,9 @@ class _GanttBarState extends State<_GanttBar> {
       width: width <= 0 ? 1.0 : width,
       height: barH,
       child: Semantics(
-        label: widget.done
+        label: widget.openEnded
+            ? '${widget.title} ($kOpenEndedSemantics)'
+            : widget.done
             ? '${widget.title} ($kDoneSemantics)'
             : widget.status == TaskStatus.onHold
             ? '${widget.title} ($kOnHoldSemantics)'
@@ -1063,6 +1134,32 @@ class _GanttBarState extends State<_GanttBar> {
                         ],
                       ),
                     ),
+                    // 열린 기간(종료일 미정) 표시: 오른쪽 끝은 확정된 종료일이
+                    // 아니라 "오늘"이라는 계산값임을 한눈에 보여주기 위해 오른쪽
+                    // 가장자리를 향해 투명도를 낮추는 그라데이션을 막대 전체
+                    // (트랙+진행+라벨) 위에 겹쳐 입힌다. 새 색을 만들지 않고 막대의
+                    // 배경(트랙) 색으로 페이드 인시켜 오른쪽이 녹아 들어가듯 보이게
+                    // 한다. 막대가 충분히 넓을 때만(좁으면 그라데이션이 의미 없으므로)
+                    // 적용한다. [IgnorePointer] 로 감싸 이 오버레이가 드래그/히트를
+                    // 가로채지 않도록 한다(드래그 자체는 어차피 비활성).
+                    if (widget.openEnded && width >= 12)
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.centerLeft,
+                                end: Alignment.centerRight,
+                                stops: const [0.55, 1.0],
+                                colors: [
+                                  Colors.transparent,
+                                  barTrackColor(context),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
                     // 리사이즈 핸들 시각 표식(호버 힌트). 드래그 중이면 생략.
                     if (_canDrag && !isDragging && width >= _handleWidth * 2)
                       Positioned(

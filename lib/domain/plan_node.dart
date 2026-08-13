@@ -13,6 +13,7 @@ library;
 import 'package:flutter/foundation.dart';
 
 import '../core/date/plan_date.dart';
+import 'bar_color.dart';
 import 'plan_enums.dart';
 
 /// 계층 트리의 단일 노드. (immutable, [copyWith] 로 수정)
@@ -78,6 +79,9 @@ class PlanNode {
   /// 노드 종류(현재 project 만 사용, quantity/recurring 은 예약).
   final NodeKind nodeKind;
 
+  /// Gantt 막대 색상(고정 팔레트). [BarColor.none] 이면 "색 지정 안 함".
+  final BarColor barColor;
+
   /// true 면 startDate/endDate/progress/isDone 을 자식으로부터 계산(rollup).
   final bool autoRollup;
 
@@ -117,6 +121,7 @@ class PlanNode {
     this.sortOrder = 0.0,
     this.isCollapsed = false,
     this.nodeKind = NodeKind.project,
+    this.barColor = BarColor.none,
     this.autoRollup = true,
     this.recurrenceFreq,
     this.recurrenceWeekdays = const <int>[],
@@ -149,6 +154,7 @@ class PlanNode {
     double? sortOrder,
     bool? isCollapsed,
     NodeKind? nodeKind,
+    BarColor? barColor,
     bool? autoRollup,
     List<String>? tagIds,
     bool? isMilestone,
@@ -180,6 +186,7 @@ class PlanNode {
       sortOrder: sortOrder ?? this.sortOrder,
       isCollapsed: isCollapsed ?? this.isCollapsed,
       nodeKind: nodeKind ?? this.nodeKind,
+      barColor: barColor ?? this.barColor,
       autoRollup: autoRollup ?? this.autoRollup,
       recurrenceFreq: identical(recurrenceFreq, _sentinel)
           ? this.recurrenceFreq
@@ -214,6 +221,7 @@ class PlanNode {
         sortOrder: sortOrder,
         isCollapsed: isCollapsed,
         nodeKind: nodeKind,
+        barColor: barColor,
         autoRollup: autoRollup,
         recurrenceFreq: recurrenceFreq,
         recurrenceWeekdays: recurrenceWeekdays,
@@ -240,6 +248,7 @@ class PlanNode {
         'sortOrder': sortOrder,
         'isCollapsed': isCollapsed,
         'nodeKind': nodeKind.name,
+        if (barColor != BarColor.none) 'barColor': barColor.name,
         'autoRollup': autoRollup,
         if (recurrenceFreq != null) 'recurrenceFreq': recurrenceFreq,
         if (recurrenceWeekdays.isNotEmpty)
@@ -285,6 +294,7 @@ class PlanNode {
       sortOrder: _parseDouble(json['sortOrder']) ?? 0.0,
       isCollapsed: json['isCollapsed'] == true,
       nodeKind: NodeKind.fromName(json['nodeKind']?.toString()),
+      barColor: BarColor.fromName(json['barColor']?.toString()),
       autoRollup: json['autoRollup'] != false,
       recurrenceFreq: json['recurrenceFreq']?.toString(),
       recurrenceWeekdays: _parseIntList(json['recurrenceWeekdays']),
@@ -333,6 +343,7 @@ class PlanNode {
       other.sortOrder == sortOrder &&
       other.isCollapsed == isCollapsed &&
       other.nodeKind == nodeKind &&
+      other.barColor == barColor &&
       other.autoRollup == autoRollup &&
       other.recurrenceFreq == recurrenceFreq &&
       _intListEq(other.recurrenceWeekdays, recurrenceWeekdays) &&
@@ -361,6 +372,7 @@ class PlanNode {
         nodeKind,
         autoRollup,
         Object.hash(
+          barColor,
           recurrenceFreq,
           Object.hashAll(recurrenceWeekdays),
           recurrenceDayOfMonth,
