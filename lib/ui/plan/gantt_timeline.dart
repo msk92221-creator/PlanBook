@@ -32,6 +32,10 @@ import 'tree_flatten.dart';
 /// 은 이번 변경 범위가 아니므로 같은 스타일의 로컬 상수로 여기에 둔다.
 const String kOpenEndedSemantics = '종료일 미정';
 
+/// 간략 모드(분기/년)에서 막대가 최소한 이 폭은 갖도록 한다. 하루짜리 일정이
+/// 0.6px 로 그려지면 사실상 안 보여서 "그 시기에 뭔가 있다" 는 정보 자체가 사라진다.
+const double kCompactMinBarWidth = 3.0;
+
 
 /// 우측 Gantt 타임라인 패널.
 ///
@@ -690,7 +694,13 @@ class _TimelineRow extends StatelessWidget {
 
     // 자손 마일스톤은 요약 바 위에 겹쳐 그린다 — 부모를 접어도 기점이 보이게.
     // (마일스톤 자기 행은 위쪽 분기에서 이미 처리됐으므로 여기 오지 않는다)
-    final descendantMilestones = collectDescendantMilestones(tree, node.id);
+    //
+    // 다만 간략 모드(분기/년) 에서는 생략한다. 하루가 2px 도 안 되는 축척에서는
+    // 자손 마름모들이 서로 겹쳐 한 덩어리로 뭉개지고, 요약 막대 자체를 가려서
+    // "언제 무엇이 몰려 있는가" 라는 정작 중요한 정보를 오히려 지운다.
+    final descendantMilestones = metrics.zoom.isCompact
+        ? const <MilestoneMarkerInfo>[]
+        : collectDescendantMilestones(tree, node.id);
 
     // **열린 기간**(시작일은 있고 종료일이 미정) 인가?
     // leaf 노드는 startDate 만 있을 때, rollup 요약은 자식들로부터 계산된
@@ -1132,6 +1142,9 @@ class _GanttBarState extends State<_GanttBar> {
       widget.store != null &&
       !widget.isSummary && // rollup 요약 바는 드래그 제외
       !widget.openEnded && // 열린 기간(오늘로 계산된 끝) 은 드래그/리사이즈 제외
+      // 간략 모드(분기/년): 하루가 2px 도 안 돼 제스처 슬롭만으로 하루 이상 밀린다.
+      // 정확히 못 바꿀 바에는 아예 막고 확대해서 편집하게 한다.
+      !widget.metrics.zoom.isCompact &&
       widget.draggableStart != null &&
       widget.draggableEnd != null;
 
@@ -1234,6 +1247,42 @@ class _GanttBarState extends State<_GanttBar> {
     return _BarDragMode.move;
   }
 
+  /// 간략 모드용 막대. 단색 사각형 하나가 전부다.
+  ///
+  /// 폭이 [kCompactMinBarWidth] 보다 좁아도 그만큼은 확보한다 — 하루짜리 일정이
+  /// 0.6px 로 그려지면 사실상 보이지 않아 "그 시기에 뭔가 있다" 는 정보 자체가
+  /// 사라지기 때문이다. 위치(왼쪽 끝)는 정확하므로 시기 판단에는 문제가 없다.
+  Widget _buildCompactBar(
+    BuildContext context, {
+    required double left,
+    required double width,
+    required double barH,
+  }) {
+    final fill = widget.done
+        ? barFillColor(context, done: true)
+        : (barColorOf(context, widget.barColor) ??
+            (widget.status != null
+                ? statusBarFillColor(context, widget.status!)
+                : barFillColor(context, done: widget.done)));
+    return Positioned(
+      left: left,
+      top: (kRowHeight - barH) / 2,
+      width: math.max(width, kCompactMinBarWidth),
+      height: barH,
+      child: Semantics(
+        label: widget.title,
+        child: IgnorePointer(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: fill,
+              borderRadius: BorderRadius.circular(1),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final m = widget.metrics;
@@ -1249,6 +1298,13 @@ class _GanttBarState extends State<_GanttBar> {
     final clampedP = widget.progress.clamp(0.0, 1.0);
 
     final isDragging = _mode != null;
+
+    // 간략 모드(분기/년): 단색 한 덩어리로만 그린다. 진행률 분할·테두리·라벨·
+    // 리사이즈 핸들·열린기간 그라데이션을 전부 생략한다 — 폭이 몇 px 뿐이라
+    // 그려봐야 뭉개지기만 하고, 오히려 "어느 시기에 일이 몰려 있는가" 를 가린다.
+    if (m.zoom.isCompact) {
+      return _buildCompactBar(context, left: left, width: width, barH: barH);
+    }
 
     return Positioned(
       left: left,
