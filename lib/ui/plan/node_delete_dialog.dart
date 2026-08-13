@@ -11,6 +11,7 @@ library;
 import 'package:flutter/material.dart';
 
 import '../../domain/plan_tree.dart';
+import '../common/dialog_insets.dart';
 
 /// 삭제 방식 선택.
 enum DeleteChoice { cancel, cascade, promote }
@@ -33,6 +34,7 @@ Future<DeleteChoice> showDeleteConfirmDialog(
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
+        insetPadding: safeDialogInsetPadding(ctx),
         title: const Text('항목 삭제'),
         content: Text('"${node.title}" 을(를) 삭제할까요?'),
         actions: [
@@ -57,6 +59,7 @@ Future<DeleteChoice> showDeleteConfirmDialog(
   final choice = await showDialog<DeleteChoice>(
     context: context,
     builder: (ctx) => AlertDialog(
+      insetPadding: safeDialogInsetPadding(ctx),
       title: const Text('항목 삭제'),
       content: Text(
         '"${node.title}" 과(와) 하위 항목 $descendants 개가 영향을 받습니다.\n'

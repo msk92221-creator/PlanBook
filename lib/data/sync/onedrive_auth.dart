@@ -14,11 +14,22 @@ library;
 import 'dart:convert';
 import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart' show visibleForTesting;
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:http/http.dart' as http;
 
 import 'pkce.dart';
+
+/// [OneDriveAuth.signIn] 가 브라우저 로그인을 띄울 때 쓸 함수.
+/// 기본값은 [FlutterWebAuth2.authenticate] 이며, 테스트에서는 이를 주입해
+/// 실패(CANCELED 등)를 흉내 낸다. 정적 호출 그대로는 테스트에서 제어할 수 없어
+/// 주입점을 뒀다 — 기존 생성자 호출부는 깨지지 않는다.
+typedef WebAuthenticate = Future<String> Function({
+  required String url,
+  required String callbackUrlScheme,
+});
 
 /// Azure 포털에서 앱을 등록하면 나오는 "애플리케이션(클라이언트) ID".
 ///
@@ -63,6 +74,28 @@ String callbackSchemeFor({required bool isMobile}) =>
 
 /// 현재 플랫폼이 사용자 지정 스킴 방식인지(Android/iOS).
 bool get _isMobilePlatform => Platform.isAndroid || Platform.isIOS;
+
+/// 브라우저 로그인 창이 앱으로 돌아오지 못해 콜백을 받지 못했을 때 보여줄 안내.
+/// 순수 함수 — [OneDriveAuth.signIn] 도 이 함수로 메시지를 만든다.
+///
+/// flutter_web_auth_2 는 콜백을 못 받은 채 브라우저 창이 닫히면
+/// `PlatformException(code: 'CANCELED')` 를 던진다. 원인이 두 가지라서 둘 다
+/// 안내한다: (a) 사용자가 로그인 창을 그냥 닫았거나, (b) Azure 앱 등록에 데스크톱
+/// 리디렉션 주소가 없어 Microsoft 가 오류 페이지를 띄우고 앱으로 돌려보내지 않은
+/// 것이다. 데스크톱 주소([kDesktopRedirectUri])가 등록돼 있지 않으면 정확히 이
+/// 증상이 난다. 모바일은 커스텀 스킴이라 원인이 다르니 짧게만 안내한다.
+@visibleForTesting
+String canceledAuthMessage({required bool isMobile}) {
+  if (isMobile) {
+    return '로그인이 취소되었습니다.';
+  }
+  return '로그인 창이 앱으로 돌아오지 못했습니다.\n'
+      '• 로그인 창을 직접 닫았을 수 있습니다 — 다시 시도해 보세요.\n'
+      '• Azure 앱 등록에 데스크톱 리디렉션 주소가 없을 수 있습니다. '
+      'Azure 포털의 "인증(Authentication)" → '
+      '"모바일 및 데스크톱 애플리케이션" 플랫폼에 아래 주소를 등록해야 합니다:\n'
+      '$kDesktopRedirectUri';
+}
 
 /// 요청하는 권한.
 /// - `Files.ReadWrite.AppFolder` : **앱 전용 폴더만**. 사용자의 다른 파일은 못 본다.
@@ -197,16 +230,43 @@ String extractAuthorizationCode(String callbackUrl, String expectedState) {
 class OneDriveAuth {
   final FlutterSecureStorage _storage;
   final http.Client _http;
+  final WebAuthenticate _authenticate;
   final String clientId;
+
+  /// 모바일 여부 판정을 덮어쓰는 주입점. null 이면 실제 플랫폼([_isMobilePlatform])
+  /// 을 따른다. 데스크톱/모바일 분기는 [Platform.isAndroid] 를 보므로 테스트에서는
+  /// 이 값으로 분기를 직접 제어한다.
+  final bool? _isMobileOverride;
 
   static const String _storageKey = 'onedrive_tokens';
 
   OneDriveAuth({
     FlutterSecureStorage? storage,
     http.Client? httpClient,
+    WebAuthenticate? authenticate,
     this.clientId = kOneDriveClientId,
+    bool? isMobileOverride,
   })  : _storage = storage ?? const FlutterSecureStorage(),
-        _http = httpClient ?? http.Client();
+        _http = httpClient ?? http.Client(),
+        _authenticate = authenticate ?? _defaultAuthenticate,
+        // 공개 파라미터(isMobileOverride) 를 private 필드에 옮긴다 —
+        // initializing formal(this._isMobileOverride) 을 쓰면 다른 라이브러리(테스트)
+        // 에서 private 이름의 named 매개변수를 전달할 수 없으므로 직접 대입한다.
+        // ignore: prefer_initializing_formals
+        _isMobileOverride = isMobileOverride;
+
+  /// 기본 인증 호출 — [OneDriveAuth] 가 주입받지 않았을 때 쓰는 동작.
+  static Future<String> _defaultAuthenticate({
+    required String url,
+    required String callbackUrlScheme,
+  }) =>
+      FlutterWebAuth2.authenticate(
+        url: url,
+        callbackUrlScheme: callbackUrlScheme,
+      );
+
+  /// 모바일 여부. 주입값이 있으면 그것을, 없으면 실제 플랫폼을 따른다.
+  bool get _isMobile => _isMobileOverride ?? _isMobilePlatform;
 
   OneDriveTokens? _cached;
 
@@ -252,7 +312,7 @@ class OneDriveAuth {
     _requireConfigured();
     final verifier = generateCodeVerifier();
     final state = generateState();
-    final isMobile = _isMobilePlatform;
+    final isMobile = _isMobile;
     final redirectUri = redirectUriFor(isMobile: isMobile);
     final url = buildAuthorizationUrl(
       clientId: clientId,
@@ -261,10 +321,25 @@ class OneDriveAuth {
       redirectUri: redirectUri,
     );
 
-    final result = await FlutterWebAuth2.authenticate(
-      url: url.toString(),
-      callbackUrlScheme: callbackSchemeFor(isMobile: isMobile),
-    );
+    final String result;
+    try {
+      result = await _authenticate(
+        url: url.toString(),
+        callbackUrlScheme: callbackSchemeFor(isMobile: isMobile),
+      );
+    } on PlatformException catch (e) {
+      // flutter_web_auth_2 는 콜백을 못 받은 채 브라우저가 닫히면 CANCELED 를
+      // 던진다. 날것의 PlatformException 은 사용자에게 아무 정보도 주지 못하므로
+      // 실행 가능한 안내로 바꾼다.
+      if (e.code == 'CANCELED') {
+        throw OneDriveAuthException(
+          canceledAuthMessage(isMobile: isMobile),
+        );
+      }
+      throw OneDriveAuthException(
+        '로그인 중 오류가 발생했습니다 (code: ${e.code}): ${e.message ?? "알 수 없는 오류"}',
+      );
+    }
     final code = extractAuthorizationCode(result, state);
 
     final res = await _http.post(

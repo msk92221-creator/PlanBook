@@ -30,6 +30,7 @@ import '../../data/update_check.dart';
 import '../../domain/app_settings.dart';
 import '../../domain/plan_integrity.dart';
 import '../plan/gantt_metrics.dart';
+import '../common/dialog_insets.dart';
 
 /// GitHub 저장소(owner/repo) — 업데이트 확인이 조회할 대상.
 const String kUpdateRepoOwner = 'msk92221-creator';
@@ -298,6 +299,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
+        insetPadding: safeDialogInsetPadding(ctx),
         title: const Text('연결 해제'),
         content: const Text(
             'OneDrive 연결을 끊습니다. 이 기기의 계획 데이터는 그대로 남고, '
@@ -364,6 +366,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final choice = await showDialog<ConflictResolution>(
       context: context,
       builder: (ctx) => AlertDialog(
+        insetPadding: safeDialogInsetPadding(ctx),
         title: const Text('양쪽이 모두 바뀌었습니다'),
         content: Text(
           '이 기기와 OneDrive 양쪽에서 각각 내용이 바뀌어 자동으로 합칠 수 없습니다.\n\n'
@@ -436,6 +439,7 @@ class _SettingsPageState extends State<SettingsPage> {
     await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
+        insetPadding: safeDialogInsetPadding(ctx),
         title: Text('새 버전 ${release.tagName} 있음'),
         content: Text(
           '현재 버전: ${info.version}\n최신 버전: ${release.tagName}\n\n'
@@ -470,6 +474,7 @@ class _SettingsPageState extends State<SettingsPage> {
     showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
+        insetPadding: safeDialogInsetPadding(ctx),
         title: Text(report.isClean ? '이상 없음' : '문제 ${report.issues.length}건 발견'),
         content: SizedBox(
           width: 400,
@@ -525,6 +530,7 @@ class _SettingsPageState extends State<SettingsPage> {
     await showDialog<void>(
       context: context,
       builder: (ctx) => AlertDialog(
+        insetPadding: safeDialogInsetPadding(ctx),
         title: const Text('내보내기 완료'),
         content: SelectableText(file.path),
         actions: [
@@ -549,6 +555,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final path = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
+        insetPadding: safeDialogInsetPadding(ctx),
         title: const Text('가져오기'),
         content: TextField(
           controller: pathCtrl,
@@ -578,6 +585,7 @@ class _SettingsPageState extends State<SettingsPage> {
       await showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
+          insetPadding: safeDialogInsetPadding(ctx),
           title: const Text('가져오기 실패'),
           content: Text(result.error!),
           actions: [
@@ -595,6 +603,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
+        insetPadding: safeDialogInsetPadding(ctx),
         title: const Text('덮어쓰기 확인'),
         content: Text(
           '이 파일에는 작업 ${snapshot.nodes.length}개, '

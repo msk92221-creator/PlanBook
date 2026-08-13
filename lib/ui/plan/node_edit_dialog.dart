@@ -33,6 +33,7 @@ import '../../domain/plan_tree.dart';
 import '../../domain/project.dart';
 import '../../domain/recurrence.dart';
 import '../../domain/tag.dart';
+import '../common/dialog_insets.dart';
 import '../common/ymd_date_picker.dart';
 import 'gantt_theme.dart';
 
@@ -308,10 +309,18 @@ class _NodeEditDialogState extends State<NodeEditDialog> {
     final scheme = Theme.of(context).colorScheme;
 
     return AlertDialog(
+      insetPadding: safeDialogInsetPadding(context),
       title: const Text('항목 편집'),
       content: SizedBox(
         width: 460,
-        child: SingleChildScrollView(
+        // 본문이 너무 길어 화면을 꽉 채우지 않도록 안전영역 높이의 일정 비율로
+        // 최대 높이를 제한한다. SingleChildScrollView 바깥에 둬야 스크롤이
+        // 제대로 동작한다.
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: maxDialogContentHeight(context),
+          ),
+          child: SingleChildScrollView(
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -648,6 +657,7 @@ class _NodeEditDialogState extends State<NodeEditDialog> {
               ),
             ],
           ),
+        ),
         ),
       ),
       actions: [
