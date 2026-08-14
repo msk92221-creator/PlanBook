@@ -15,6 +15,18 @@ const double kDefaultTreePaneWidth = 300.0;
 const double kMinTreePaneWidth = 160.0;
 const double kMaxTreePaneWidth = 900.0;
 
+/// 작업 목록 안의 "기간" 열 폭. 제목 열은 남는 공간을 차지하므로 이 값만
+/// 조절하면 두 열의 비율이 정해진다.
+const double kDefaultPeriodColumnWidth = 120.0;
+const double kMinPeriodColumnWidth = 60.0;
+const double kMaxPeriodColumnWidth = 400.0;
+
+/// [value] 를 기간 열 폭 허용 범위로 자른다.
+double clampPeriodColumnWidth(double value) {
+  if (value.isNaN || value.isInfinite) return kDefaultPeriodColumnWidth;
+  return value.clamp(kMinPeriodColumnWidth, kMaxPeriodColumnWidth);
+}
+
 /// [value] 를 트리 칸 폭 허용 범위로 자른다. NaN/무한대는 기본값으로 되돌린다.
 double clampTreePaneWidth(double value) {
   if (value.isNaN || value.isInfinite) return kDefaultTreePaneWidth;
@@ -77,6 +89,12 @@ class AppSettings {
   /// 손상돼 이상한 값이 들어와도 한쪽 칸이 사라지지 않게.
   final double treePaneWidth;
 
+  /// 작업 목록의 "기간" 열 폭(px). 경계선을 끌어 조절한다.
+  final double periodColumnWidth;
+
+  /// "기간" 열을 보일지. 끄면 제목이 그만큼 넓게 보인다.
+  final bool showPeriodColumn;
+
   const AppSettings({
     this.themeMode = ThemeMode.system,
     this.defaultZoom = GanttZoomLevel.day,
@@ -85,6 +103,8 @@ class AppSettings {
     this.seededDefaultProjects = false,
     this.restoreLastScreen = false,
     this.treePaneWidth = kDefaultTreePaneWidth,
+    this.periodColumnWidth = kDefaultPeriodColumnWidth,
+    this.showPeriodColumn = true,
   });
 
   AppSettings copyWith({
@@ -95,6 +115,8 @@ class AppSettings {
     bool? seededDefaultProjects,
     bool? restoreLastScreen,
     double? treePaneWidth,
+    double? periodColumnWidth,
+    bool? showPeriodColumn,
   }) =>
       AppSettings(
         themeMode: themeMode ?? this.themeMode,
@@ -107,6 +129,10 @@ class AppSettings {
         treePaneWidth: treePaneWidth == null
             ? this.treePaneWidth
             : clampTreePaneWidth(treePaneWidth),
+        periodColumnWidth: periodColumnWidth == null
+            ? this.periodColumnWidth
+            : clampPeriodColumnWidth(periodColumnWidth),
+        showPeriodColumn: showPeriodColumn ?? this.showPeriodColumn,
       );
 
   Map<String, Object?> toJson() => {
@@ -117,6 +143,8 @@ class AppSettings {
         'seededDefaultProjects': seededDefaultProjects,
         'restoreLastScreen': restoreLastScreen,
         'treePaneWidth': treePaneWidth,
+        'periodColumnWidth': periodColumnWidth,
+        'showPeriodColumn': showPeriodColumn,
       };
 
   /// 알려진 필드만 파싱하고 알 수 없는 필드는 무시한다.
@@ -125,6 +153,11 @@ class AppSettings {
     final week = rawWeek is num
         ? rawWeek.toInt()
         : int.tryParse(rawWeek?.toString() ?? '') ?? kWeekStartWeekday;
+    final rawPeriodCol = json['periodColumnWidth'];
+    final periodCol = rawPeriodCol is num
+        ? rawPeriodCol.toDouble()
+        : double.tryParse(rawPeriodCol?.toString() ?? '') ??
+            kDefaultPeriodColumnWidth;
     final rawPane = json['treePaneWidth'];
     final pane = rawPane is num
         ? rawPane.toDouble()
@@ -137,6 +170,9 @@ class AppSettings {
       seededDefaultProjects: json['seededDefaultProjects'] == true,
       restoreLastScreen: json['restoreLastScreen'] == true,
       treePaneWidth: clampTreePaneWidth(pane),
+      periodColumnWidth: clampPeriodColumnWidth(periodCol),
+      // 저장값이 없으면 기본은 "보임".
+      showPeriodColumn: json['showPeriodColumn'] != false,
     );
   }
 
@@ -163,7 +199,9 @@ class AppSettings {
       other.weekStart == weekStart &&
       other.seededDefaultProjects == seededDefaultProjects &&
       other.restoreLastScreen == restoreLastScreen &&
-      other.treePaneWidth == treePaneWidth;
+      other.treePaneWidth == treePaneWidth &&
+      other.periodColumnWidth == periodColumnWidth &&
+      other.showPeriodColumn == showPeriodColumn;
 
   @override
   int get hashCode => Object.hash(
@@ -174,5 +212,7 @@ class AppSettings {
         seededDefaultProjects,
         restoreLastScreen,
         treePaneWidth,
+        periodColumnWidth,
+        showPeriodColumn,
       );
 }

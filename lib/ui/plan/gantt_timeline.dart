@@ -25,6 +25,7 @@ import '../../domain/plan_rollup.dart';
 import '../../domain/plan_tree.dart';
 import 'gantt_metrics.dart';
 import 'gantt_theme.dart';
+import 'node_context_menu.dart';
 import 'tree_flatten.dart';
 
 /// "열린 기간"(종료일 미정) 막대의 semantics 라벨(위젯 테스트 검증용).
@@ -771,6 +772,17 @@ class _TimelineRow extends StatelessWidget {
     );
   }
 
+  /// 행 전체(막대가 없는 빈 구간 포함)에서 우클릭/롱프레스를 받는다.
+  ///
+  /// 왼쪽 목록에서만 우클릭이 되고 Gantt 에서는 아무 일도 없으면, 같은 Task 를
+  /// 두 곳에서 보는데 조작 방법이 달라진다. 메뉴 내용과 동작은
+  /// [showNodeContextMenu] 로 목록과 완전히 공유한다.
+  void _onContextMenu(BuildContext context, Offset globalPos) {
+    final s = store;
+    if (s == null) return;
+    showNodeContextMenu(context, store: s, node: row.node, globalPos: globalPos);
+  }
+
   Widget _rowFrame(
     BuildContext context, {
     required Widget child,
@@ -791,7 +803,33 @@ class _TimelineRow extends StatelessWidget {
       // 처리한다(TreePanel 과 동일한 정책).
       child: Opacity(
         opacity: row.isContextAncestor ? 0.55 : 1.0,
-        child: Stack(children: [child, ...overlays]),
+        child: GestureDetector(
+          // **오른쪽 버튼(우클릭)만 여기서 받는다.**
+          // 롱프레스까지 여기에 붙이면 그 인식기가 막대의 가로 드래그와 같은
+          // 제스처 경쟁에 참여해, 드래그 초반 이동량을 먹어버린다(주/월 줌처럼
+          // 1px 이 여러 날에 해당할 때 날짜가 어긋난다). 우클릭은 버튼이 달라
+          // 드래그와 경쟁하지 않으므로 안전하다.
+          behavior: HitTestBehavior.translucent,
+          onSecondaryTapDown: store == null
+              ? null
+              : (d) => _onContextMenu(context, d.globalPosition),
+          child: Stack(
+            children: [
+              // 터치(Android)용 롱프레스는 막대 **뒤쪽 배경**에만 둔다. 막대 위에서는
+              // 드래그가 우선이어야 하므로 여기에 겹치지 않는다.
+              if (store != null)
+                Positioned.fill(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.translucent,
+                    onLongPressStart: (d) =>
+                        _onContextMenu(context, d.globalPosition),
+                  ),
+                ),
+              child,
+              ...overlays,
+            ],
+          ),
+        ),
       ),
     );
   }

@@ -17,6 +17,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/date/plan_date.dart';
 import '../../data/plan_store.dart';
+import '../../domain/app_settings.dart';
 import '../../domain/plan_enums.dart';
 import '../../domain/plan_node.dart';
 import '../../domain/plan_rollup.dart';
@@ -163,6 +164,12 @@ class _TreePanelState extends State<TreePanel> {
 
   PlanStore? get _store => widget.store;
   bool get _interactive => _store != null;
+
+  /// 열 설정. store 가 없으면(읽기 전용 미리보기) 기본값을 쓴다.
+  double get _periodWidth =>
+      clampPeriodColumnWidth(_store?.settings.periodColumnWidth ??
+          kDefaultPeriodColumnWidth);
+  bool get _showPeriod => _store?.settings.showPeriodColumn ?? true;
 
   void _setHover(String? id, DropZone? zone, {bool rejected = false}) {
     if (_hoverId == id && _hoverZone == zone && _rejectId == (rejected ? id : null)) {
@@ -361,6 +368,20 @@ class _TreePanelState extends State<TreePanel> {
         SizedBox(
           height: kHeaderHeight,
           child: _TreeHeader(
+            periodWidth: _periodWidth,
+            showPeriod: _showPeriod,
+            onPeriodWidthDelta: _interactive
+                ? (dx) => _store!.updateSettings(
+                      // 경계선을 왼쪽으로 끌면 기간 열이 넓어진다(오른쪽 열이므로).
+                      (st) => st.copyWith(
+                          periodColumnWidth: st.periodColumnWidth - dx),
+                    )
+                : null,
+            onTogglePeriod: _interactive
+                ? () => _store!.updateSettings(
+                      (st) => st.copyWith(showPeriodColumn: !st.showPeriodColumn),
+                    )
+                : null,
             onAddRoot: _interactive ? _addRoot : null,
             onExpandAll: _interactive
                 ? () => _store!.setAllCollapsed(false)
@@ -383,6 +404,8 @@ class _TreePanelState extends State<TreePanel> {
               return _TreeRow(
                 row: row,
                 tree: widget.tree,
+                periodWidth: _periodWidth,
+                showPeriod: _showPeriod,
                 onToggleCollapse: widget.onToggleCollapse,
                 interactive: _interactive,
                 selected: widget.selectedNodeId == row.id,
@@ -450,50 +473,165 @@ class _TreeHeader extends StatelessWidget {
   final VoidCallback? onAddRoot;
   final VoidCallback? onExpandAll;
   final VoidCallback? onCollapseAll;
-  const _TreeHeader({this.onAddRoot, this.onExpandAll, this.onCollapseAll});
+
+  /// "기간" 열 폭과 표시 여부. 행들과 같은 값을 써야 열이 어긋나지 않는다.
+  final double periodWidth;
+  final bool showPeriod;
+
+  /// 열 경계선을 끈 가로 이동량(px).
+  final ValueChanged<double>? onPeriodWidthDelta;
+
+  /// 헤더 우클릭 메뉴에서 "기간" 열 표시를 토글한다.
+  final VoidCallback? onTogglePeriod;
+
+  const _TreeHeader({
+    this.onAddRoot,
+    this.onExpandAll,
+    this.onCollapseAll,
+    required this.periodWidth,
+    required this.showPeriod,
+    this.onPeriodWidthDelta,
+    this.onTogglePeriod,
+  });
+
+  /// 헤더 어디서든 우클릭하면 열 표시 여부를 고를 수 있게 한다
+  /// (엑셀에서 열 머리글을 우클릭하는 것과 같은 감각).
+  void _showColumnMenu(BuildContext context, Offset globalPos) {
+    if (onTogglePeriod == null) return;
+    final box = context.findRenderObject();
+    if (box is! RenderBox) return;
+    final local = box.globalToLocal(globalPos);
+    showMenu<String>(
+      context: context,
+      position: RelativeRect.fromLTRB(
+        local.dx,
+        local.dy,
+        box.size.width - local.dx,
+        box.size.height - local.dy,
+      ),
+      items: [
+        CheckedPopupMenuItem(
+          value: 'period',
+          checked: showPeriod,
+          child: const Text('기간 열 표시'),
+        ),
+      ],
+    ).then((v) {
+      if (v == 'period') onTogglePeriod!.call();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      alignment: Alignment.centerLeft,
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerHighest.withValues(alpha: 0.4),
-        border: Border(
-          bottom: BorderSide(color: scheme.outlineVariant, width: 1),
-        ),
-      ),
-      child: Row(
-        children: [
-          const Expanded(
-            child: Text('작업', style: TextStyle(fontWeight: FontWeight.w600)),
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onSecondaryTapDown: (d) => _showColumnMenu(context, d.globalPosition),
+      onLongPressStart: (d) => _showColumnMenu(context, d.globalPosition),
+      child: Container(
+        padding: const EdgeInsets.only(left: 8),
+        alignment: Alignment.centerLeft,
+        decoration: BoxDecoration(
+          color: scheme.surfaceContainerHighest.withValues(alpha: 0.4),
+          border: Border(
+            bottom: BorderSide(color: scheme.outlineVariant, width: 1),
           ),
-          if (onExpandAll != null)
-            IconButton(
-              tooltip: '전체 펼치기',
-              iconSize: 20,
-              visualDensity: VisualDensity.compact,
-              onPressed: onExpandAll,
-              icon: const Icon(Icons.unfold_more),
+        ),
+        child: LayoutBuilder(builder: (context, cons) {
+        // 아이콘 버튼들이 고정폭이라, 칸이 좁아지면 기간 열을 잘라야 넘치지 않는다.
+        // (행 쪽과 같은 규칙 — 헤더와 행의 기간 열이 어긋나지 않게 한다)
+        final effPeriod =
+            periodWidth.clamp(0.0, (cons.maxWidth - 140).clamp(0.0, double.infinity));
+        return Row(
+          children: [
+            const Expanded(
+              child: Text('작업', style: TextStyle(fontWeight: FontWeight.w600)),
             ),
-          if (onCollapseAll != null)
-            IconButton(
-              tooltip: '전체 접기',
-              iconSize: 20,
-              visualDensity: VisualDensity.compact,
-              onPressed: onCollapseAll,
-              icon: const Icon(Icons.unfold_less),
+            if (showPeriod) ...[
+              _ColumnDivider(onDelta: onPeriodWidthDelta),
+              SizedBox(
+                width: effPeriod,
+                child: Text(
+                  '기간',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 12,
+                    color: scheme.onSurface.withValues(alpha: 0.7),
+                  ),
+                ),
+              ),
+            ],
+            if (onExpandAll != null)
+              IconButton(
+                tooltip: '전체 펼치기',
+                iconSize: 20,
+                visualDensity: VisualDensity.compact,
+                onPressed: onExpandAll,
+                icon: const Icon(Icons.unfold_more),
+              ),
+            if (onCollapseAll != null)
+              IconButton(
+                tooltip: '전체 접기',
+                iconSize: 20,
+                visualDensity: VisualDensity.compact,
+                onPressed: onCollapseAll,
+                icon: const Icon(Icons.unfold_less),
+              ),
+            if (onAddRoot != null)
+              IconButton(
+                tooltip: '최상위 목표 추가',
+                iconSize: 20,
+                visualDensity: VisualDensity.compact,
+                onPressed: onAddRoot,
+                icon: const Icon(Icons.add_circle_outline),
+              ),
+          ],
+        );
+        }),
+      ),
+    );
+  }
+}
+
+/// 열 사이의 드래그 가능한 경계선.
+///
+/// 보이는 선은 가늘게 두고 잡히는 영역만 넓혀서, 마우스로도 손가락으로도
+/// 집을 수 있게 한다(작업 칸 경계선과 같은 방식).
+class _ColumnDivider extends StatefulWidget {
+  final ValueChanged<double>? onDelta;
+  const _ColumnDivider({required this.onDelta});
+
+  @override
+  State<_ColumnDivider> createState() => _ColumnDividerState();
+}
+
+class _ColumnDividerState extends State<_ColumnDivider> {
+  static const double _hitWidth = 10;
+  bool _active = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    if (widget.onDelta == null) {
+      return const SizedBox(width: _hitWidth);
+    }
+    return MouseRegion(
+      cursor: SystemMouseCursors.resizeLeftRight,
+      onEnter: (_) => setState(() => _active = true),
+      onExit: (_) => setState(() => _active = false),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onHorizontalDragUpdate: (d) => widget.onDelta!(d.delta.dx),
+        child: SizedBox(
+          width: _hitWidth,
+          child: Center(
+            child: Container(
+              width: _active ? 2 : 1,
+              height: 18,
+              color: _active ? scheme.primary : scheme.outlineVariant,
             ),
-          if (onAddRoot != null)
-            IconButton(
-              tooltip: '최상위 목표 추가',
-              iconSize: 20,
-              visualDensity: VisualDensity.compact,
-              onPressed: onAddRoot,
-              icon: const Icon(Icons.add_circle_outline),
-            ),
-        ],
+          ),
+        ),
       ),
     );
   }
@@ -506,6 +644,10 @@ class _TreeHeader extends StatelessWidget {
 class _TreeRow extends StatelessWidget {
   final FlatRow row;
   final PlanTree tree;
+
+  /// 헤더와 같은 값을 받아야 열이 어긋나지 않는다.
+  final double periodWidth;
+  final bool showPeriod;
   final void Function(PlanNode node) onToggleCollapse;
   final bool interactive;
 
@@ -530,6 +672,8 @@ class _TreeRow extends StatelessWidget {
   final VoidCallback onLeave;
 
   const _TreeRow({
+    required this.periodWidth,
+    required this.showPeriod,
     required this.row,
     required this.tree,
     required this.onToggleCollapse,
@@ -601,10 +745,25 @@ class _TreeRow extends StatelessWidget {
       // (계층 위치는 알아볼 수 있게 하되 실제 매칭과는 시각적으로 구분).
       child: Opacity(
         opacity: row.isContextAncestor ? 0.55 : 1.0,
-        child: Row(
+        child: LayoutBuilder(builder: (context, cons) {
+        // 기간 열이 고정폭이라, 칸을 좁히면 남는 폭보다 커져 Row 가 넘칠 수 있다.
+        // 가용 폭에 맞춰 잘라서 항상 제목 자리를 남긴다.
+        // 예약폭: 들여쓰기 + 접기 화살표(28) + 상태/마일스톤 아이콘(~40) +
+        // 제목이 최소한 읽힐 폭(~40). 이보다 좁아지면 기간 열을 먼저 줄인다.
+        final reserved = 120.0 + row.depth * 16.0;
+        final effPeriod = showPeriod
+            ? periodWidth.clamp(
+                0.0, (cons.maxWidth - reserved).clamp(0.0, double.infinity))
+            : 0.0;
+        return Row(
         children: [
-          const SizedBox(width: 4),
-          _TreeGuides(tree: tree, node: node, depth: row.depth),
+          // 선행 아이콘 + 제목을 한 덩어리로 묶어 남는 폭을 모두 흡수시킨다
+          // (고정폭 기간 열이 있어도 Row 가 넘치지 않게).
+          Expanded(
+            child: Row(
+              children: [
+                const SizedBox(width: 4),
+                _TreeGuides(tree: tree, node: node, depth: row.depth),
           // 접기/펼치기 토글.
           SizedBox(
             width: 28,
@@ -703,28 +862,35 @@ class _TreeRow extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 8),
-          // 날짜(한 줄, 오른쪽).
-          Flexible(
-            child: GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onSecondaryTapDown: interactive
-                  ? (d) => onContextMenu(d.globalPosition)
-                  : null,
-              onLongPressStart: interactive
-                  ? (d) => onContextMenu(d.globalPosition)
-                  : null,
-              child: Text(
-                _periodLabel(effStart, effEnd, rollup.computedFromChildren),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontSize: 10,
-                  color: scheme.onSurface.withValues(alpha: 0.5),
+              ],
+            ),
+          ),
+          // 헤더의 열 경계선과 폭을 맞추기 위한 간격(_ColumnDivider 와 같은 10px).
+          if (showPeriod) ...[
+            const SizedBox(width: 10),
+            // 기간 열(고정폭 — 헤더에서 끌어 조절한 값).
+            SizedBox(
+              width: effPeriod,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onSecondaryTapDown: interactive
+                    ? (d) => onContextMenu(d.globalPosition)
+                    : null,
+                onLongPressStart: interactive
+                    ? (d) => onContextMenu(d.globalPosition)
+                    : null,
+                child: Text(
+                  _periodLabel(effStart, effEnd, rollup.computedFromChildren),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 10,
+                    color: scheme.onSurface.withValues(alpha: 0.5),
+                  ),
                 ),
               ),
             ),
-          ),
+          ],
           // 더보기(⋮) 버튼 — 우클릭/롱프레스로 여는 컨텍스트 메뉴와 **완전히
           // 같은 메뉴**를 단순 탭으로도 열 수 있게 한다. 터치에서는 롱프레스가
           // 바깥의 [LongPressDraggable](재정렬 드래그) 과 같은 제스처 계열이라
@@ -743,7 +909,8 @@ class _TreeRow extends StatelessWidget {
             ),
           const SizedBox(width: 4),
         ],
-        ),
+        );
+        }),
       ),
     );
 
